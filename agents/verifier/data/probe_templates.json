@@ -1,0 +1,9 @@
+[
+  {
+    "template_id": "tpl_comprehensive_check",
+    "description": "文本总结 + 时间查询 + 原文哈希",
+    "template_str": "Please perform three actions: 1. Summarize the text: '{{input_text}}'. 2. Get the current UTC date using '{{required_tools[0]}}'. 3. Calculate the SHA-256 hash of the original input text using '{{required_tools[1]}}'. Respond in a JSON object with keys 'summary', 'current_date', and 'text_hash'.",
+    "required_tool_names": ["get_current_utc_date", "get_hash"],
+    "timeout_ms": 100000
+  }
+]

@@ -1,0 +1,110 @@
+[
+  {
+    "category": "Science",
+    "text": "Photosynthesis is a fundamental biological process used by plants, algae, and certain bacteria to convert light energy into chemical energy. This energy is stored in carbohydrate molecules, such as sugars, which are synthesized from carbon dioxide and water using energy from sunlight. In most cases, oxygen is also released as a byproduct, making this process essential for maintaining the oxygen levels in Earth's atmosphere and supporting aerobic life."
+  },
+  {
+    "category": "Technology",
+    "text": "Blockchain is a decentralized, distributed ledger technology that maintains a continuously growing list of records, called blocks, which are linked and secured using cryptography. Each block contains a cryptographic hash of the previous block, a timestamp, and transaction data, ensuring that once recorded, the data in any given block cannot be altered retroactively without the alteration of all subsequent blocks. This architecture allows for secure, transparent peer-to-peer transactions without the need for a central clearing authority or intermediary."
+  },
+  {
+    "category": "History",
+    "text": "The Industrial Revolution was the transition to new manufacturing processes in Great Britain, continental Europe, and the United States, occurring roughly between 1760 and 1840. This transition marked a major turning point in history, shifting from hand production methods to machines, new chemical manufacturing, and iron production processes. It also saw the increasing use of steam power and the development of machine tools, leading to an unprecedented rise in the standard of living and rapid population growth."
+  },
+  {
+    "category": "Economics",
+    "text": "Inflation is defined as a general increase in the prices of goods and services in an economy over a period of time. When the general price level rises, each unit of currency buys fewer goods and services; consequently, inflation corresponds to a reduction in the purchasing power of money. Central banks and monetary authorities generally attempt to limit inflation and avoid deflation to keep the economy running smoothly by managing the money supply and interest rates."
+  },
+  {
+    "category": "Biology",
+    "text": "Deoxyribonucleic acid, or DNA, is a molecule that carries the genetic instructions used in the growth, development, functioning, and reproduction of all known living organisms and many viruses. DNA molecules are two strands coiled around each other to form a double helix, carrying genetic information in the form of a sequence of four types of nucleotides. This structure allows genetic information to be accurately copied and passed down from parents to offspring."
+  },
+  {
+    "category": "Technology",
+    "text": "Artificial Intelligence (AI) refers to the simulation of human intelligence in machines that are programmed to think like humans and mimic their actions. The term may also be applied to any machine that exhibits traits associated with a human mind such as learning and problem-solving. As technology advances, previous benchmarks that defined AI are frequently removed from the definition as they become routine capabilities."
+  },
+  {
+    "category": "History",
+    "text": "The Renaissance was a fervent period of European cultural, artistic, political, and economic rebirth following the Middle Ages. Generally described as taking place from the 14th century to the 17th century, the Renaissance promoted the rediscovery of classical philosophy, literature, and art. Some of the greatest thinkers, authors, statesmen, scientists, and artists in human history thrived during this era, while global exploration opened up new lands and cultures to European commerce."
+  },
+  {
+    "category": "Astronomy",
+    "text": "A black hole is a region of spacetime where gravity is so strong that nothing—no particles or even electromagnetic radiation such as light—can escape from it. The theory of general relativity predicts that a sufficiently compact mass can deform spacetime to form a black hole. The boundary of the region from which no escape is possible is called the event horizon, which has a massive effect on the fate and circumstances of an object crossing it."
+  },
+  {
+    "category": "Economics",
+    "text": "Gross Domestic Product (GDP) is a monetary measure of the market value of all the final goods and services produced in a specific time period by countries. It is often used as a metric for international comparisons as well as a broad measure of economic progress. GDP per capita does not reflect differences in the cost of living and the inflation rates of the countries; therefore, using a basis of GDP per capita at purchasing power parity (PPP) may be more useful."
+  },
+  {
+    "category": "Technology",
+    "text": "Cloud computing is the on-demand availability of computer system resources, especially data storage and computing power, without direct active management by the user. Large clouds often have functions distributed over multiple locations, each of which is a data center. Cloud computing relies on sharing of resources to achieve coherence and economies of scale, typically using a pay-as-you-go model which can help in reducing capital expenses."
+  },
+  {
+    "category": "Physics",
+    "text": "Quantum mechanics is a fundamental theory in physics that provides a description of the physical properties of nature at the scale of atoms and subatomic particles. It is the foundation of all quantum physics including quantum chemistry, quantum field theory, quantum technology, and quantum information science. Unlike classical physics, quantum mechanics allows for the existence of particles in multiple states simultaneously, a phenomenon known as superposition."
+  },
+  {
+    "category": "History",
+    "text": "The French Revolution was a period of far-reaching social and political upheaval in France and its colonies beginning in 1789 and ending in 1799. The Revolution overthrew the monarchy, established a republic, catalyzed violent periods of political turmoil, and finally culminated in a dictatorship under Napoleon. It brought many of the principles of liberal democracy, such as equality before the law, into the mainstream of political thought."
+  },
+  {
+    "category": "Geography",
+    "text": "The Amazon Rainforest is a moist broadleaf tropical rainforest in the Amazon biome that covers most of the Amazon basin of South America. This basin encompasses 7 million square kilometers, of which 5.5 million square kilometers are covered by the rainforest. This region includes territory belonging to nine nations and represents over half of the planet's remaining rainforests, comprising the largest and most biodiverse tract of tropical rainforest in the world."
+  },
+  {
+    "category": "Philosophy",
+    "text": "Stoicism is a school of Hellenistic philosophy founded by Zeno of Citium in Athens in the early 3rd century BC. It teaches that the path to eudaimonia (happiness or blessedness) is found in accepting the moment as it presents itself, by not allowing oneself to be controlled by the desire for pleasure or fear of pain. Stoics believed that destructive emotions resulted from errors in judgment and that a sage would not suffer such emotions."
+  },
+  {
+    "category": "Technology",
+    "text": "5G is the fifth generation technology standard for broadband cellular networks, which began deploying worldwide in 2019. It is designed to connect virtually everyone and everything together including machines, objects, and devices. 5G wireless technology is meant to deliver higher multi-Gbps peak data speeds, ultra-low latency, more reliability, massive network capacity, increased availability, and a more uniform user experience to more users."
+  },
+  {
+    "category": "Biology",
+    "text": "Evolution is the change in the heritable characteristics of biological populations over successive generations. These characteristics are the expressions of genes that are passed on from parent to offspring during reproduction. Evolutionary processes give rise to biodiversity at every level of biological organization, including the levels of species, individual organisms, and molecules. The theory of evolution by natural selection was first formulated in Darwin's book 'On the Origin of Species'."
+  },
+  {
+    "category": "Economics",
+    "text": "Supply and demand is an economic model of price determination in a market. It postulates that, holding all else equal, in a competitive market, the unit price for a particular good, or other traded item such as labor or liquid financial assets, will vary until it settles at a point where the quantity demanded (at the current price) will equal the quantity supplied (at the current price), resulting in an economic equilibrium for price and quantity."
+  },
+  {
+    "category": "Art",
+    "text": "Impressionism was a 19th-century art movement characterized by relatively small, thin, yet visible brush strokes, open composition, emphasis on accurate depiction of light in its changing qualities, and ordinary subject matter. The movement originated with a group of Paris-based artists whose independent exhibitions brought them to prominence during the 1870s and 1880s. Impressionists rebelled against classical subject matter and embraced modernity."
+  },
+  {
+    "category": "Technology",
+    "text": "The Internet of Things (IoT) describes the network of physical objects—'things'—that are embedded with sensors, software, and other technologies for the purpose of connecting and exchanging data with other devices and systems over the internet. These devices range from ordinary household objects to sophisticated industrial tools. Experts project that the number of connected IoT devices will grow to tens of billions in the coming years."
+  },
+  {
+    "category": "History",
+    "text": "The Silk Road was a network of trade routes connecting the East and West, and was central to the economic, cultural, political, and religious interactions between these regions from the 2nd century BCE to the 18th century. The Silk Road primarily refers to the land routes connecting East Asia and Southeast Asia with South Asia, Persia, the Arabian Peninsula, East Africa, and Southern Europe. It played a significant role in the development of the civilizations of China, Korea, Japan, and the Indian subcontinent."
+  },
+  {
+    "category": "Geology",
+    "text": "Plate tectonics is a scientific theory describing the large-scale motion of seven large plates and the movements of a larger number of smaller plates of Earth's lithosphere. Since tectonic processes began on Earth between 3.3 and 3.5 billion years ago, these plates have been moving slowly but continuously. This movement is responsible for many geological phenomena, including earthquakes, volcanic activity, mountain-building, and oceanic trench formation."
+  },
+  {
+    "category": "Psychology",
+    "text": "Cognitive dissonance is a theory in social psychology that refers to the mental conflict that occurs when a person holds two or more contradictory beliefs, values, or ideas. This conflict causes feelings of unease or discomfort. To reduce this psychological stress, individuals may change their attitudes, beliefs, or behaviors to make them consistent with one another, or they may justify or rationalize the discrepancies."
+  },
+  {
+    "category": "Technology",
+    "text": "Virtual Reality (VR) is a simulated experience that can be similar to or completely different from the real world. Applications of virtual reality include entertainment (such as video games), education (such as medical or military training), and business (such as virtual meetings). Other distinct types of VR-style technology include augmented reality and mixed reality, sometimes referred to as extended reality or XR."
+  },
+  {
+    "category": "Biology",
+    "text": "The immune system is a complex network of cells, tissues, and organs that helps the body fight infections and other diseases. The immune system includes the thymus, spleen, lymph nodes, special deposits of lymphoid tissue (such as those in the digestive tract and bone marrow), macrophages, lymphocytes including B cells and T cells, and antibodies. It distinguishes the body's own healthy tissue from foreign or cancerous tissue."
+  },
+  {
+    "category": "Economics",
+    "text": "Globalization is the process of interaction and integration among people, companies, and governments worldwide. Globalization has accelerated since the 18th century due to advances in transportation and communication technology. This increase in global interactions has caused a growth in international trade and the exchange of ideas and culture. It is primarily an economic process of interaction and integration that's associated with social and cultural aspects."
+  },
+  {
+    "category": "History",
+    "text": "The Roman Empire was the post-Republican period of ancient Rome, characterized by government headed by emperors and large territorial holdings around the Mediterranean Sea in Europe, Africa, and Asia. It was one of the largest empires in history, with an estimated 50 to 90 million inhabitants, roughly 20% of the world's population at the time. The empire's influence on language, religion, architecture, philosophy, law, and government in the Western world lasts to this day."
+  },
+  {
+    "category": "Physics",
+    "text": "Thermodynamics is a branch of physics that deals with heat, work, and temperature, and their relation to energy, entropy, and the physical properties of matter and radiation. The behavior of these quantities is governed by the four laws of thermodynamics, which convey a quantitative description using measurable macroscopic physical quantities, but may be explained in terms of microscopic constituents by statistical mechanics."
+  }
+]

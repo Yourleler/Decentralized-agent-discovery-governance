@@ -1,0 +1,10 @@
+key.json
+__pycache__/
+node_modules/
+test/verifiers_key.json
+test/holders_key.json
+README_AI.txt
+image/
+agents_4_key.json
+data/verifiers_key.json
+data/holders_key.json
