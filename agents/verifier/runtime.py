@@ -80,7 +80,7 @@ class VerifierRuntime:
     def _get_memory_file(self, target_did):
         """
         获取上下文存储路径。
-        文件名格式: memory_{Verifier_DID}_{Holder_DID}.json
+        文件名格式: memory_{Verifier_DID}_to_{Holder_DID}.json
         确保多进程/多租户模式下，每个 Verifier-Holder 对都有独立文件。
         """
         # 1. 获取自己的 DID (Verifier) 并处理特殊字符
@@ -97,6 +97,9 @@ class VerifierRuntime:
         return os.path.join(self.data_dir, filename)
 
     def _append_interaction(self, target_did, req, res):
+        """
+        把每一次的完整对话存进来
+        """
         file_path = self._get_memory_file(target_did)
         existing_data = []
         if os.path.exists(file_path):
@@ -112,6 +115,9 @@ class VerifierRuntime:
             json.dump(existing_data, f, indent=2, ensure_ascii=False)
 
     def _get_local_snapshot_hash(self, target_did):
+        """
+        获取验证方存的记录哈希
+        """
         file_path = self._get_memory_file(target_did)
         if not os.path.exists(file_path):
             return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
@@ -135,7 +141,7 @@ class VerifierRuntime:
         for vc_data in items:
             safe_did = self.wallet.did.replace(":", "_")
             vc_types = vc_data.get("type", ["UnknownCredential"])
-            vc_type_name = vc_types[-1] if isinstance(vc_types, list) else str(vc_types)
+            vc_type_name = vc_types[-1] if isinstance(vc_types, list) else str(vc_types)#约定VC最后一项是最具体的
             filename = f"vc_{safe_did}_{vc_type_name}.json"
             vc_file = os.path.join(self.data_dir, filename)
 
@@ -153,7 +159,7 @@ class VerifierRuntime:
     # === 辅助方法：Probe 构造与验证 ===
 
     def _load_probe_config(self):
-        # 创建默认文件以防缺失
+        """从磁盘读取题目模板和测试数据。如果文件不存在，自动创建默认的“哈希计算”题目"""
         if not os.path.exists(self.probe_templates_file):
             default_tpl = [{"template_id": "tpl_01", "template_str": "Calculate SHA256 of '{{input_text}}'."}]
             with open(self.probe_templates_file, 'w', encoding='utf-8') as f: json.dump(default_tpl, f)
@@ -169,18 +175,26 @@ class VerifierRuntime:
             return [], []
 
     def _construct_probe_payload(self):
+        """
+        构建验证能力请求,返回5个变量:
+        1. payload: 请求体
+        2. expected_hash: 预期哈希
+        3. final_prompt: 最终提示
+        4. input_text: 原始文本
+        5. timeout_ms: 超时时间
+        """
         templates, inputs = self._load_probe_config()
         if not templates or not inputs:
             # Fallback
             templates = [{"template_str": "Echo '{{input_text}}'"}]
             inputs = [{"text": "Test"}]
 
-        template_data = random.choice(templates)
+        template_data = random.choice(templates)#随机抽取
         input_data = random.choice(inputs)
         
         input_text = input_data["text"]
         raw_template = template_data["template_str"]
-        final_prompt = raw_template.replace("{{input_text}}", input_text)
+        final_prompt = raw_template.replace("{{input_text}}", input_text)#果宝机甲,归位
         
         # 处理工具占位符
         required_tools = template_data.get("required_tool_names", [])
@@ -206,6 +220,9 @@ class VerifierRuntime:
         return payload, expected_hash, final_prompt, input_text, int(dynamic_timeout)
 
     def _verify_tool_outputs(self, response_text, expected_hash):
+        """
+        判断哈希是否正确，再从模型输出中提取一个时间戳，验证它是否与当前真实时间接近（±120秒）
+        """
         details = []
         passed = True
         
@@ -284,7 +301,7 @@ class VerifierRuntime:
                 return False, f"HTTP {resp.status_code}", None, (t_send, t_recv, t_recv)
             
             vp = resp.json()
-            is_valid, reason = self.validator.verify_vp(vp, nonce)
+            is_valid, reason = self.validator.verify_vp(vp, nonce)#验证vp
             holder_did = vp.get("holder", {}).get("id") if isinstance(vp.get("holder"), dict) else vp.get("holder")
             
             self._append_interaction(holder_did, req, vp)
@@ -299,7 +316,7 @@ class VerifierRuntime:
 
     def execute_probe(self, holder_did):
         """执行探测任务"""
-        payload, expected_hash, _, raw_input_text, timeout_ms = self._construct_probe_payload()
+        payload, expected_hash, _, raw_input_text, timeout_ms = self._construct_probe_payload()#final_prompt已经在payload里面了
         
         serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'))
         payload["verifier_signature"] = self.wallet.sign_message(serialized)
@@ -318,10 +335,12 @@ class VerifierRuntime:
             result_text = data.get("execution_result", "")
             self._append_interaction(holder_did, payload, data)
             
+
+            #下面这个是处理的现有的一种模板,可拓展
             # 1. 工具验证
             passed, msg = self._verify_tool_outputs(result_text, expected_hash)
             
-            # 2. AI 审计
+            # 2. AI 审计,让judge_chain判断是否正确处理了工具调用
             if passed:
                 try:
                     ai_res = self.judge_chain.invoke({
@@ -417,6 +436,12 @@ class VerifierRuntime:
             # if barrier: time.sleep(random.uniform(0.1, 0.5))
 
             # 1. 思考 (LLM)
+            #输入现状：它把上一轮执行的结果（current_input，比如“认证成功”或“VC获取失败”）喂给 LLM（大脑）。
+
+            # LLM 推理：调用 agent_chain（即 definition.py 里定义的 Controller）。LLM 会查看 SYSTEM_PROMPT 定义的状态机，结合当前的对话历史，决定下一步该干嘛。
+
+            # 输出决策：LLM 返回一段文本，里面必须包含一个指令，例如 COMMAND: INITIATE_PROBE
+
             chat_history.append({"role": "user", "content": current_input})
             try:
                 response = self.agent_chain.invoke({"messages": chat_history})
@@ -440,6 +465,8 @@ class VerifierRuntime:
             if not barrier: print(f"[{self.name}] Turn {turn} | CMD: {cmd_line}")
 
             # 3. 执行指令
+
+                #缺证件时
             if "REQUEST_VC" in cmd_line:
                 try:
                     parts = cmd_line.split("|")
@@ -456,8 +483,9 @@ class VerifierRuntime:
                             current_input = f"System: VC Failed. {msg}"
                 except Exception as e:
                     current_input = f"Error: {e}"
-
+                #建立连接
             elif "INITIATE_AUTH" in cmd_line:
+                #Verifier 向 Holder 发送 HTTP 请求，通过 validator 验证对方的 VP 签名
                 success, msg, h_did, times = self.execute_auth()
                 if success:
                     target_holder_did = h_did
@@ -465,15 +493,15 @@ class VerifierRuntime:
                     print(f"[{self.name}] ✅ Auth Passed")
                     
                     # 统计
-                    t1, t2, t3 = times
-                    my_stats["T1"] = t1 - t_start_loop
-                    my_stats["T2"] = t2 - t1
-                    my_stats["T3"] = t3 - t2
-                    my_stats["T4"] = my_stats["T2"] + my_stats["T3"]
-                    t_auth_done = t3
+                    t1, t2, t3 = times#tsend,trecv,tverify
+                    my_stats["T1"] = t1 - t_start_loop#连接动作总消耗时间
+                    my_stats["T2"] = t2 - t1#接收消耗时间
+                    my_stats["T3"] = t3 - t2#验证消耗时间
+                    my_stats["T4"] = my_stats["T2"] + my_stats["T3"]#接收+验证
+                    t_auth_done = t3#连接完成的时间戳
                 else:
                     current_input = f"Auth FAILED. {msg}"
-
+                #能力探测
             elif "INITIATE_PROBE" in cmd_line:
                 if not target_holder_did:
                     current_input = "Error: Auth required."
@@ -485,13 +513,13 @@ class VerifierRuntime:
                         print(f"[{self.name}] ✅ Probe Passed")
                         t1, t2, t3, sla = times
                         if t_auth_done > 0:
-                            my_stats["T5"] = t1 - t_auth_done
-                            my_stats["T6"] = t2 - t1
-                            my_stats["T7"] = t3 - t2
-                            my_stats["T8"] = my_stats["T6"] + my_stats["T7"]
-                            my_stats["SLA_Load_Ratio"] = sla
-                            t_probe_done = t3
-
+                            my_stats["T5"] = t1 - t_auth_done#能力探测动作总消耗时间
+                            my_stats["T6"] = t2 - t1#能力探测接收消耗时间
+                            my_stats["T7"] = t3 - t2#能力探测验证消耗时间
+                            my_stats["T8"] = my_stats["T6"] + my_stats["T7"]#能力探测接收+验证
+                            my_stats["SLA_Load_Ratio"] = sla#能力探测SLA负载比
+                            t_probe_done = t3#能力探测完成的时间戳
+                #上下文一致性检查
             elif "INITIATE_CONTEXT_CHECK" in cmd_line:
                 if not target_holder_did:
                     current_input = "Error: Auth required."
@@ -503,20 +531,21 @@ class VerifierRuntime:
                         print(f"[{self.name}] ✅ Context Passed")
                         t1, t2, t3 = times
                         if t_probe_done > 0:
-                            my_stats["T9"] = t1 - t_probe_done
-                            my_stats["T10"] = t2 - t1
-                            my_stats["T11"] = t3 - t2
-                            my_stats["T12"] = my_stats["T10"] + my_stats["T11"]
+                            my_stats["T9"] = t1 - t_probe_done#上下文一致性检查动作总消耗时间
+                            my_stats["T10"] = t2 - t1#上下文一致性检查接收消耗时间
+                            my_stats["T11"] = t3 - t2#上下文一致性检查验证消耗时间
+                            my_stats["T12"] = my_stats["T10"] + my_stats["T11"]#上下文一致性检查接收+验证
                             
                             # 压测模式下提交数据
                             if stats_queue:
                                 my_stats["Verifier"] = self.name
                                 stats_queue.put(my_stats)
                                 break # 任务完成退出
-
+                #结束审核
             elif "FINISH_AUDIT" in cmd_line:
                 print(f"[{self.name}] ✅ Audit Complete.")
                 break
+                #中止审核
             elif "ABORT" in cmd_line:
                 print(f"[{self.name}] ❌ Audit Aborted.")
                 break

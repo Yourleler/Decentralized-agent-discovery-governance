@@ -1,1 +1,5 @@
-{}
+{
+    "editor.autoClosingBrackets": "always",
+    "editor.autoClosingQuotes": "always",
+    "editor.tabCompletion": "on"
+}

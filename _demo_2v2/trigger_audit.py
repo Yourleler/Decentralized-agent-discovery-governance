@@ -108,7 +108,7 @@ def main():
         target_did = target_info["did"]
         target_holder_name = target_info["name"]
         
-        # 创建线程
+        # 创建线程 
         t = threading.Thread(
             target=trigger_single_audit,
             args=(v_name, v_port, target_holder_name, target_did)

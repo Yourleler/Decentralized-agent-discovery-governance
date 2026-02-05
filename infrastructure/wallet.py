@@ -8,6 +8,10 @@ from eth_account.messages import encode_defunct
 from infrastructure.load_config import load_key_config
 
 class IdentityWallet:
+    """
+    数字身份钱包
+    负责管理私钥、签名、创建 VP、管理 VC
+    """
     def __init__(self, agent_role_name, w3_provider=None, override_config=None):
         self.w3 = w3_provider if w3_provider else Web3()
         if override_config:
@@ -64,12 +68,16 @@ class IdentityWallet:
         self.my_vcs.append(vc_data)
 
     def sign_message(self, text_payload):
+        """
+        对某笔交易签名
+        """
         message = encode_defunct(text=text_payload)
         signed = self.w3.eth.account.sign_message(message, private_key=self.private_key)
         return signed.signature.hex()
 
     def create_vp(self, nonce):
-        t_start = time.perf_counter()
+        #创建VP
+        t_start = time.perf_counter()#高精度计时
         
         vp_payload = {
             "@context": ["https://www.w3.org/2018/credentials/v1"],

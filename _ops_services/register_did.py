@@ -86,7 +86,7 @@ def register_did_implicit(role_name: str):
         print(f"\n[严重错误] 脚本执行异常: {e}")
 
 if __name__ == "__main__":
-    # 从命令行接收参数，例如: python other_entities/register_did.py agent_a_admin
+    # 从命令行接收参数，例如: python other_entities/register_did.py agent_a_admin 
     if len(sys.argv) < 2:
         print("用法: python other_entities/register_did.py <角色名>")
         print("例如: python other_entities/register_did.py agent_a_admin")

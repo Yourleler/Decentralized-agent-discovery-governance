@@ -75,7 +75,7 @@ def start_network():
     print("\n✅ Network is running! (Press Ctrl+C in this terminal to stop all nodes)")
     
     try:
-        # 保持主脚本运行，直到用户按 Ctrl+C
+        # 保持主脚本运行，直到用户按 Ctrl+C 
         while True:
             time.sleep(1)
     except KeyboardInterrupt:

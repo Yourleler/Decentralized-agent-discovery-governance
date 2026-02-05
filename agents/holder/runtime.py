@@ -30,29 +30,39 @@ if not os.path.exists(DATA_DIR):
 # === 全局变量占位 ===
 # 实际初始化将在 __main__ 中根据参数决定，或者在 import 时加载默认值
 wallet = None
-validator = DIDValidator()
+validator = DIDValidator()#DID验证器
 agent_app = None
 ROLE_NAME = "agent_a_op" # 默认值
 
 # === 2. 内存管理 ===
 def get_memory_file(verifier_did):
+    """
+    根据 verifier 的 DID，生成一个专属的 memory 文件路径
+    """
     if not verifier_did: verifier_did = "unknown"
     safe_name = verifier_did.replace(":", "_")
     return os.path.join(DATA_DIR, f"memory_{safe_name}.json")
 
 def get_snapshot_hash(verifier_did):
+    """
+    对当前 verifier 对应的 memory 文件，算一个确定性的 SHA-256 哈希
+    """
     file_path = get_memory_file(verifier_did)
     if not os.path.exists(file_path):
         return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             memory_data = json.load(f)
+        #格式化,确保同内容哈希一致
         serialized = json.dumps(memory_data, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
         return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
     except Exception:
         return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
 
 def append_interaction(verifier_did, request_data, response_data):
+    """
+    把一次完整的“请求 + 响应”顺序追加到 memory 文件中
+    """
     file_path = get_memory_file(verifier_did)
     memory_data = []
     if os.path.exists(file_path):
@@ -67,11 +77,16 @@ def append_interaction(verifier_did, request_data, response_data):
     #print(f"[Memory] Interaction appended for {verifier_did}")
 
 def verify_incoming_json(json_data):
+    """
+    检验DID正确和内容未篡改
+    """
     verifier_did = json_data.get('verifier_did')
     signature = json_data.get('verifier_signature')
     if not verifier_did or not signature: return False, "Missing DID or Signature"
     payload_copy = json_data.copy()
-    if 'verifier_signature' in payload_copy: del payload_copy['verifier_signature']
+    #移除签名,签名是对内容不带签名的json进行签名
+    if 'verifier_signature' in payload_copy:
+        del payload_copy['verifier_signature']
     serialized_payload = json.dumps(payload_copy, sort_keys=True, separators=(',', ':'))
     return validator.verify_request_signature(serialized_payload, signature, verifier_did)
 
@@ -84,6 +99,7 @@ def save_vc_to_wallet(vc_data):
     """
     safe_did = wallet.did.replace(":", "_")
     vc_types = vc_data.get("type", ["UnknownCredential"])
+    #把 VC 的 type 字段规范化成一个稳定、可用的类型名,[-1]是约定最后放最具体的
     vc_type_name = vc_types[-1] if isinstance(vc_types, list) else str(vc_types)
     filename = f"vc_{safe_did}_{vc_type_name}.json"
     vc_file = os.path.join(DATA_DIR, filename)
@@ -101,10 +117,13 @@ def has_local_vc():
         return False
     safe_did = wallet.did.replace(":", "_")
     pattern = os.path.join(DATA_DIR, f"vc_{safe_did}_*.json")
-    files = glob.glob(pattern)
-    return len(files) > 0
+    files = glob.glob(pattern)#用pattern匹配文件
+    return len(files) > 0#找不到返回空list
 
 def execute_request_vc(issuer_url, credential_type):
+    """
+    一个 DID 持有者，用带 nonce 的签名请求 Issuer 颁发 VC，并安全接收和存储它
+    """
     print(f"[Action] Requesting {credential_type} from {issuer_url}...")
     
     payload = {
@@ -112,7 +131,7 @@ def execute_request_vc(issuer_url, credential_type):
         "credentialType": credential_type,
         "applicant": wallet.did,
         "timestamp": time.time(),
-        "nonce": str(uuid.uuid4())
+        "nonce": str(uuid.uuid4())#防重放设计
     }
     
     serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'))
@@ -142,7 +161,7 @@ def execute_request_vc(issuer_url, credential_type):
         return True, "VC Simulated"
 
 def perform_startup_check():
-    """启动时的自检流程"""
+    """启动时的自检流程,检测VC是否存在,不存在则申请"""
     if has_local_vc():
         print("[Startup] ✅ VC found in local storage.")
         wallet.load_local_vcs(DATA_DIR)
@@ -165,6 +184,10 @@ def perform_startup_check():
 
 @app.route('/auth', methods=['POST'])
 def handle_auth():
+    """
+    我是 verifier,我向你发起一次认证请求。
+    你如果同意,请给我一份你当前身份和 VC 的可验证展示
+    """
     data = request.json
     verifier_did = data.get('verifier_did')
     nonce = data.get('nonce')
@@ -182,7 +205,7 @@ def handle_auth():
                 f"Authentication Request from {verifier_did}.\n"
                 f"Nonce: {nonce}\n"
                 "Action: Analyze trust. If you agree to authenticate, output 'APPROVE'."
-            )
+            )#合法请求 = 同意” 是默认策略,为“可拒绝、可策略化、可审计的 Agent 行为”留接口
             config = {"configurable": {"thread_id": f"auth-{nonce}"}}
             response = agent_app.invoke(
                 {"messages": [{"role": "user", "content": prompt}]},
@@ -204,6 +227,9 @@ def handle_auth():
 
 @app.route('/probe', methods=['POST'])
 def handle_probe():
+    """
+    验证是否是活着的、可执行的 Agent 实例 
+    """
     data = request.json
     verifier_did = data.get('verifier_did')
     task_id = data.get('task_id')
@@ -242,6 +268,9 @@ def handle_probe():
 
 @app.route('/context_hash', methods=['POST'])
 def handle_context_hash():
+    """
+    上下文一致性审计,holder方把对应的verifier记录哈希返回
+    """
     data = request.json
     verifier_did = data.get('verifier_did')
     nonce = data.get('nonce')
@@ -285,6 +314,9 @@ def handle_context_hash():
 
 @app.route('/reset_memory', methods=['POST'])
 def reset_memory():
+    """
+    手动清空某个 verifier 对应的本地 memory 文件
+    """
     data = request.json or {}
     verifier_did = data.get('verifier_did')
     if verifier_did:
@@ -342,4 +374,4 @@ if __name__ == '__main__':
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
     
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    app.run(host='0.0.0.0', port=port, threaded=True)#接受所有IP的请求

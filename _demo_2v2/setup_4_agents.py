@@ -1,10 +1,12 @@
 import sys
 import os
+import copy
+#找到某级为infrastructure的父目录,插入搜索列表最前面
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = current_dir
 while not os.path.exists(os.path.join(project_root, "infrastructure")):
     parent = os.path.dirname(project_root)
-    if parent == project_root: break 
+    if parent == project_root: break #到了文件系统根目录了
     project_root = parent
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -39,7 +41,7 @@ def generate_accounts(names):
     print(f"\n[Step 1] 正在生成 {len(names)} 组 Agent 账户...")
     agents = []
     for name in names:
-        # 使用 extra_entropy 增加随机性
+        # 使用 extra_entropy (附加随机熵)增加随机性
         admin_acct = w3.eth.account.create(extra_entropy=f"{name}_admin_{time.time()}")
         op_acct = w3.eth.account.create(extra_entropy=f"{name}_op_{time.time()}")
         
@@ -59,7 +61,7 @@ def fund_accounts(agents, funder_info):
     
     print(f"\n[Step 2] 主账户 {funder_addr} 正在分发 ETH...")
     
-    # 获取主账户的初始 Nonce
+    # 获取主账户的下一笔可用的 nonce
     start_nonce = w3.eth.get_transaction_count(funder_addr, 'pending')
     
     tx_hashes = []
@@ -77,9 +79,9 @@ def fund_accounts(agents, funder_info):
         }
         
         signed_tx = w3.eth.account.sign_transaction(tx, funder_pk)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)#把原始交易发送给当前连接的节点,节点广播到整个网络
         tx_hashes.append(tx_hash)
-        print(f"    -> 转账给 {agent['name']} Admin: {w3.to_hex(tx_hash)}")
+        print(f"    -> 转账给 {agent['name']} Admin,交易哈希: {w3.to_hex(tx_hash)}")
     
     print("    等待转账确认...")
     for tx_hash in tx_hashes:
@@ -132,11 +134,15 @@ def register_dids(agents):
     print("    DID 注册完成。")
 
 def add_delegates(agents):
-    """添加 Delegate (并行发送，统一等待)"""
+    """
+    添加 Delegate (并行发送，统一等待)
+    给 admin_addr 这个 DID，写入一条属性：
+“它的 Secp256k1 签名认证公钥 = op_addr”，有效期一年
+    """
     print(f"\n[Step 4] 正在添加 Delegate (Op Key)...")
     contract = w3.eth.contract(address=REGISTRY_ADDRESS, abi=REGISTRY_ABI)
-    validity = 365 * 24 * 60 * 60
-    key_name_bytes = "did/pub/Secp256k1/sigAuth/hex".encode('utf-8').ljust(32, b'\0')
+    validity = 365 * 24 * 60 * 60#一年有效期
+    key_name_bytes = "did/pub/Secp256k1/sigAuth/hex".encode('utf-8').ljust(32, b'\0')#可用于签名认证的公钥
     
     # 获取当前 gas price 并提升 50% 以确保交易被优先处理
     current_gas_price = int(w3.eth.gas_price * 1.5)
@@ -196,16 +202,10 @@ def save_keys_to_file(agents):
         name = agent['name']
         
         # 添加 Admin 账户: agent_x_admin
-        output_data["accounts"][f"{name}_admin"] = {
-            "address": agent["admin"]["address"],
-            "private_key": agent["admin"]["private_key"]
-        }
+        output_data["accounts"][f"{name}_admin"] = copy.deepcopy(agent["admin"])
         
         # 添加 Op 账户: agent_x_op
-        output_data["accounts"][f"{name}_op"] = {
-            "address": agent["op"]["address"],
-            "private_key": agent["op"]["private_key"]
-        }
+        output_data["accounts"][f"{name}_op"] = copy.deepcopy(agent["op"])
 
     # 3. 确保目标目录存在
     os.makedirs(os.path.dirname(KEY_OUTPUT_FILE), exist_ok=True)
@@ -216,7 +216,8 @@ def save_keys_to_file(agents):
     print(f"    保存成功！")
 
 def main():
-    funder_info = config["accounts"].get(FUNDER_ACCOUNT_KEY)
+    funder_info = config["accounts"].get(FUNDER_ACCOUNT_KEY)#master账户
+
     if not funder_info:
         print(f"错误: key.json 中找不到主账户 '{FUNDER_ACCOUNT_KEY}'")
         return

@@ -16,7 +16,19 @@ if root_dir not in sys.path:
 
 from infrastructure.load_config import load_key_config
 
+#角色定义 (Role)
+#Controller (指挥官): 根据 SYSTEM_PROMPT 定义的状态机，决定当前的步骤。它会输出特定的指令字符串（如 COMMAND: INITIATE_AUTH）给 runtime.py 去执行。
+#Judge (裁判): 一个专门的 LLM 调用链，用来评估 Holder 的回答内容是否准确（用于 JUDGE_RESPONSE 阶段）。
+
+
+
 # === System Prompt (Controller) ===
+#PHASE 0: PREPARATION (准备): 发现缺少凭证时，要求 Holder 去申请 VC (REQUEST_VC)。
+
+#PHASE 1: AUTHENTICATION (认证): 建立连接，开始身份核验 (INITIATE_AUTH)。
+
+#PHASE 2: PROBE TASK (探测/挑战): 身份核验通过后，Verifier 会随机生成一个任务（Probe），考验 Holder 是不是真有本事（防止“有证无能”）。
+#PHASE 3: JUDGMENT (裁决): 收到 Holder 的任务结果后，LLM 介入评估，给出 Pass/Fail 以及理由
 SYSTEM_PROMPT = """You are an Autonomous Verifier Agent (DID: {did}).
 Your role is to drive the audit process by issuing COMMANDS to the Runtime.
 
@@ -101,9 +113,9 @@ def create_verifier_resources(did_string):
         # 2. 构建 Controller Chain (负责流程)
         controller_prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT.format(did=did_string)),
-            MessagesPlaceholder(variable_name="messages"),
+            MessagesPlaceholder(variable_name="messages"),#留下一个占位符,调用时可以通过设置messages参数传入对话设置
         ])
-        agent_runnable = controller_prompt | shared_llm
+        agent_runnable = controller_prompt | shared_llm#用管道符把prompt和llm串起来
 
         # 3. 构建 Judge Chain (负责审计)
         judge_prompt = ChatPromptTemplate.from_template(JUDGE_PROMPT_TEMPLATE)

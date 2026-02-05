@@ -6,7 +6,7 @@ import sys
 import hashlib   
 import datetime  
 
-os.environ["NO_PROXY"] = "aliyuncs.com,dashscope.aliyuncs.com,localhost,127.0.0.1"
+os.environ["NO_PROXY"] = "aliyuncs.com,dashscope.aliyuncs.com,localhost,127.0.0.1"#网络直连白名单配置
 
 # === LangChain & QwQ 引入 ===
 from langchain_qwq import ChatQwQ
@@ -56,6 +56,13 @@ def get_holder_tools():
 
 # === System Prompt ===
 # 核心指令：明确区分三种模式，只负责决策和计算，不负责签名
+
+# MODE 0: 申请 VC
+# MODE 1: 身份认证决策
+# MODE 2: 执行探测任务
+# MODE 3: 上下文哈希审计
+
+
 SYSTEM_PROMPT = """You are an autonomous AI Agent (Holder) with DID: {did}.
 Your role is to act as the "Brain" - making decisions and processing information.
 The system Runtime (your "Body") handles all cryptographic signing, private keys, and VC presentations.
@@ -102,7 +109,7 @@ def create_holder_agent(did_string):
     """
     # 1. 加载配置获取 API Key
     config = load_key_config()
-    api_key = config.get("qwq_api_key") or os.environ.get("DASHSCOPE_API_KEY")
+    api_key = config.get("qwq_api_key") or os.environ.get("DASHSCOPE_API_KEY")#依次取得
     
     if not api_key:
         print("[Agent] Error: 缺少 qwq_api_key，请在 key.json 中配置。")

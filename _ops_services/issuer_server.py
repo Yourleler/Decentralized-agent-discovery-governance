@@ -92,7 +92,7 @@ def process_single_template(template_data, applicant_did):
 
 def generate_all_vcs(applicant_did):
     """
-    遍历 vc_schemas 目录，为 applicant 签发所有模板定义的 VCs
+    遍历 vc_schemas 目录，为 applicant 签发所有模板定义的 VCs,后续为了模拟造假和不同vc检索需要修改
     """
     issued_vcs = []
     

@@ -51,7 +51,7 @@ class DIDValidator:
                 process = subprocess.run(
                     ["node", self.resolve_script, did, current_rpc_url],
                     capture_output=True, text=True, encoding='utf-8'
-                )
+                )#开一个子进程
                 
                 # 如果成功返回 0，且有输出
                 if process.returncode == 0:
@@ -112,7 +112,7 @@ class DIDValidator:
 
         try:
             msg = encode_defunct(text=text_payload)
-            recovered_addr = self.w3.eth.account.recover_message(msg, signature=signature)
+            recovered_addr = self.w3.eth.account.recover_message(msg, signature=signature)#通过“原始消息”和“数字签名”，反向推导出签名者的以太坊地址
             
             doc = self.resolve_did(claimed_did)
             if not doc:
@@ -174,6 +174,9 @@ class DIDValidator:
         return True, "VP Valid"
 
     def _verify_single_vc(self, vc, expected_holder):
+        """
+        验证单个 VC
+        """
         res = {"valid": False, "error": ""}
         
         # Subject

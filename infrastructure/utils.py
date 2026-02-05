@@ -9,7 +9,7 @@ from .load_config import load_key_config
 
 _RPC_CYCLE = None
 
-ETH_PRICE_USD = 3121.34 
+ETH_PRICE_USD = 2930.0  # 2026/1/29 根据实时行情调整，多来源平均 
 
 def get_rpc_url():
     """
@@ -18,7 +18,7 @@ def get_rpc_url():
     优势：既保证了单一进程内的负载均衡，又防止了多进程启动时产生'惊群效应'
     """
     global _RPC_CYCLE
-    config = load_key_config()
+    config = load_key_config() #从key读取的key.json
     
     # 优先检查是否有节点池
     if "api_url_pool" in config and isinstance(config["api_url_pool"], list) and len(config["api_url_pool"]) > 0:
@@ -62,7 +62,7 @@ def get_w3():
 # ethr:did 注册表地址 (Sepolia)
 REGISTRY_ADDRESS = "0x03d5003bf0e79C5F5223588F347ebA39AfbC3818"
 
-# ===  合约ABI ===
+# ===  ERC-1056 DID Registry 的 ABI ===
 REGISTRY_ABI = [
     {
         "constant": False,

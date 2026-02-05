@@ -33,7 +33,7 @@ DEFAULT_ROLE = "agent_b_op"
 ISSUER_URL = "http://localhost:8000"
 
 # 线程池：允许同时处理后台审计任务
-executor = ThreadPoolExecutor(max_workers=10)
+executor = ThreadPoolExecutor(max_workers=10)#Flask 负责“接单”，线程池负责“干活”
 
 class VerifierServerLogic:
     """
@@ -56,6 +56,7 @@ class VerifierServerLogic:
         self._init_components()
 
     def _init_components(self):
+        """初始化 Wallet, Validator 和 AI Chains"""
         try:
             self.wallet = IdentityWallet(self.role_name)
             # Server 启动时加载本地 VC
@@ -72,12 +73,20 @@ class VerifierServerLogic:
     # === 辅助方法 ===
 
     def _get_memory_file(self, target_did):
+        """
+        获取上下文存储路径。
+        文件名格式: memory_{Verifier_DID}_to_{Holder_DID}.json
+        确保多进程/多租户模式下，每个 Verifier-Holder 对都有独立文件。
+        """
         my_did = self.wallet.did
         safe_my = my_did.replace(":", "_")
         safe_target = (target_did or "unknown").replace(":", "_")
         return os.path.join(self.data_dir, f"memory_{safe_my}_to_{safe_target}.json")
 
     def _append_interaction(self, target_did, req, res):
+        """
+        把每一次的完整对话存进来
+        """
         file_path = self._get_memory_file(target_did)
         existing_data = []
         if os.path.exists(file_path):
@@ -91,6 +100,9 @@ class VerifierServerLogic:
             json.dump(existing_data, f, indent=2, ensure_ascii=False)
 
     def _get_local_snapshot_hash(self, target_did):
+        """
+        获取验证方存的记录哈希
+        """
         file_path = self._get_memory_file(target_did)
         if not os.path.exists(file_path):
             return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
@@ -103,6 +115,11 @@ class VerifierServerLogic:
             return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
 
     def _save_vc_to_wallet(self, vc_data_or_list):
+        """
+        保存 VC 到磁盘 并 同步到内存
+        支持单个对象或对象列表
+        文件名格式: vc_{DID}_{VC_Type}.json
+        """
         items = vc_data_or_list if isinstance(vc_data_or_list, list) else [vc_data_or_list]
         for vc_data in items:
             safe_did = self.wallet.did.replace(":", "_")
@@ -118,6 +135,7 @@ class VerifierServerLogic:
                 print(f"[{self.name}] Failed to save VC: {e}")
 
     def _load_probe_config(self):
+        """从磁盘读取题目模板和测试数据。如果文件不存在，自动创建默认的“哈希计算”题目"""
         # 创建默认文件以防缺失
         if not os.path.exists(self.probe_templates_file):
             default_tpl = [{"template_id": "tpl_01", "template_str": "Calculate SHA256 of '{{input_text}}'."}]
@@ -134,6 +152,14 @@ class VerifierServerLogic:
             return [], []
 
     def _construct_probe_payload(self):
+        """
+        构建验证能力请求,返回5个变量:
+        1. payload: 请求体
+        2. expected_hash: 预期哈希
+        3. final_prompt: 最终提示
+        4. input_text: 原始文本
+        5. timeout_ms: 超时时间
+        """
         templates, inputs = self._load_probe_config()
         if not templates or not inputs:
             # Fallback
@@ -171,6 +197,9 @@ class VerifierServerLogic:
         return payload, expected_hash, final_prompt, input_text, int(dynamic_timeout)
 
     def _verify_tool_outputs(self, response_text, expected_hash):
+        """
+        判断哈希是否正确，再从模型输出中提取一个时间戳，验证它是否与当前真实时间接近（±120秒）
+        """
         details = []
         passed = True
         
@@ -213,6 +242,7 @@ class VerifierServerLogic:
         self.execute_request_vc(ISSUER_URL, "Audit_License")
 
     def execute_request_vc(self, issuer_url, credential_type):
+        """向 Issuer 申请 VC"""
         print(f"[{self.name}] Requesting VC...")
         payload = {
             "type": "CredentialApplication", "credentialType": credential_type,
@@ -302,6 +332,7 @@ verifier_logic = VerifierServerLogic(DEFAULT_ROLE)
 
 @app.route('/status', methods=['GET'])
 def status():
+    """查看 Verifier 当前的运行状态"""  
     return jsonify({
         "did": verifier_logic.wallet.did,
         "vcs": len(verifier_logic.wallet.my_vcs),

@@ -95,7 +95,7 @@ def add_delegate_with_contract(admin_role: str, op_role: str):
         print(f"\n[严重错误] 脚本执行异常: {e}")
 
 if __name__ == "__main__":
-    # 从命令行接收参数，例如: python other_entities/add_delegate.py agent_a_admin agent_a_op
+    # 从命令行接收参数，例如: python other_entities/add_delegate.py agent_a_admin agent_a_op 
     if len(sys.argv) < 3:
         print("用法: python other_entities/add_delegate.py <admin_role> <op_role>")
         print("例如: python other_entities/add_delegate.py agent_a_admin agent_a_op")
