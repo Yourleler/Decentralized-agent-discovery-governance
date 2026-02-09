@@ -29,7 +29,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
     // ----------------------------
     uint256 public constant SCORE_BASE = 60;
     uint256 public constant SCORE_MAX = 100;
-    uint256 public constant SCORE_MIN = 30; //低于此分数则被视为罚没死
+    uint256 public constant SCORE_MIN = 40; //低于此分数则被视为罚没死
     int256 public constant SCORE_RECOVERY_RATE = 2; //分数恢复速率
     // S_init = SCORE_BASE + FACTOR * ln(1 + STAKE_MULTIPLIER * stake)
     // 其中所有变量均按 UD60x18（1e18 精度）参与计算
@@ -203,6 +203,38 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
         return agents[_agentAddress];
     }
 
+    /**
+     * @dev T-CPRM: S_global = min(S_init, S_init - P_total + SCORE_RECOVERY_RATE * floor((now - T_last) / 1 days))
+     * 计算 Agent 的当前动态全局信誉分
+     */
+    function getGlobalScore(
+        address _agentAddress
+    ) public view returns (uint256) {
+        Agent memory agent = agents[_agentAddress];
+        if (!agent.isRegistered) return 0;
+
+        // 防止减法溢出：如果累计罚分已超过初始分，返回 0
+        if (agent.accumulatedPenalty >= agent.initScore) return 0;
+
+        int256 baseParams = int256(agent.initScore) -
+            int256(agent.accumulatedPenalty);
+
+        uint256 daysSinceLast = 0;
+        if (agent.lastMisconductTimestamp > 0) {
+            daysSinceLast =
+                (block.timestamp - agent.lastMisconductTimestamp) /
+                1 days;
+        }
+
+        int256 sGlobal = baseParams +
+            SCORE_RECOVERY_RATE *
+            int256(daysSinceLast);
+
+        if (sGlobal > int256(agent.initScore)) return agent.initScore;
+        if (sGlobal < 0) return 0;
+        return uint256(sGlobal);
+    }
+
     // ----------------------------
     // Core Functions
     // ----------------------------
@@ -316,6 +348,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
 
     /**
      * @dev 减少质押，同时重算 initScore
+     * 注意：减持后的 sGlobal 不能低于 SCORE_MIN
      */
     function withdrawStake(uint256 _amount) external nonReentrant {
         require(agents[msg.sender].isRegistered, "Agent not registered");
@@ -328,11 +361,17 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
         uint256 oldStake = agents[msg.sender].stakeAmount;
         uint256 oldInitScore = agents[msg.sender].initScore;
 
+        // 先更新状态
         agents[msg.sender].stakeAmount -= _amount;
-        uint256 newInitScore = _calculateInitScore(
+        agents[msg.sender].initScore = _calculateInitScore(
             agents[msg.sender].stakeAmount
         );
-        agents[msg.sender].initScore = newInitScore;
+
+        // 用 getGlobalScore 检查减持后的分数，如果不通过整个交易会 revert 回滚
+        require(
+            getGlobalScore(msg.sender) > SCORE_MIN,
+            "Withdrawal would drop score below minimum"
+        );
 
         (bool success, ) = payable(msg.sender).call{value: _amount}("");
         require(success, "Transfer failed");
@@ -342,7 +381,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
             oldStake,
             agents[msg.sender].stakeAmount,
             oldInitScore,
-            newInitScore
+            agents[msg.sender].initScore
         );
     }
 
@@ -407,16 +446,19 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
         // 注意：这里建议去掉 !isSlashed 检查，允许对已 Slash 的坏人继续追加罚款
         // require(!agent.isSlashed, "Agent already slashed");
 
+        // 先获取当前的 sGlobal（罚分前）
+        uint256 currentSGlobal = getGlobalScore(_targetAgent);
+
+        // 更新累计罚分和时间戳
         agent.accumulatedPenalty += _penaltyScore;
         agent.lastMisconductTimestamp = block.timestamp;
 
-        // --- 核心修复逻辑 ---
-        // 1. 如果罚分已经超过了初始分 (分数归零)，直接 Slash
-        if (agent.accumulatedPenalty >= agent.initScore) {
-            agent.isSlashed = true;
-        }
-        // 2. 否则，才安全地进行减法判断
-        else if (agent.initScore - agent.accumulatedPenalty <= SCORE_MIN) {
+        // --- 基于当前 sGlobal 判断是否罚没 ---
+        // 如果当前 sGlobal 减去本次罚分后会低于或等于 SCORE_MIN，则置为罚没状态
+        if (
+            currentSGlobal <= _penaltyScore ||
+            currentSGlobal - _penaltyScore <= SCORE_MIN
+        ) {
             agent.isSlashed = true;
         }
         // --------------------
