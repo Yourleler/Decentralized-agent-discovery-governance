@@ -1,0 +1,8 @@
+{
+  "sepolia": {
+    "AgentRegistry_v1": {
+      "address": "0xb6ebea4da5e4e71558f6f2f6619410c53009d552",
+      "startBlock": 10223927
+    }
+  }
+}

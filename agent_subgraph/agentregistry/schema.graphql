@@ -1,0 +1,126 @@
+type AgentAppealed @entity(immutable: true) {
+  id: Bytes!
+  agentAddress: Bytes! # address
+  evidenceCid: String! # string
+  timestamp: BigInt! # uint256
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type AgentRegistered @entity(immutable: true) {
+  id: Bytes!
+  agentAddress: Bytes! # address
+  did: String! # string
+  cid: String! # string
+  initScore: BigInt! # uint256
+  stakeAmount: BigInt! # uint256
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type AgentRestored @entity(immutable: true) {
+  id: Bytes!
+  agentAddress: Bytes! # address
+  slashed: Boolean! # bool
+  newTotalPenalty: BigInt! # uint256
+  newlastMisconductTimestamp: BigInt! # uint256
+  reason: String! # string
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type AgentSlashed @entity(immutable: true) {
+  id: Bytes!
+  agentAddress: Bytes! # address
+  slashed: Boolean! # bool
+  penaltyScore: BigInt! # uint256
+  newTotalPenalty: BigInt! # uint256
+  slashedEthAmount: BigInt! # uint256
+  reason: String! # string
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type AgentUnregistered @entity(immutable: true) {
+  id: Bytes!
+  agentAddress: Bytes! # address
+  did: String! # string
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type MisbehaviorReported @entity(immutable: true) {
+  id: Bytes!
+  reporter: Bytes! # address
+  targetAgent: Bytes! # address
+  evidenceCid: String! # string
+  timestamp: BigInt! # uint256
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type RoleAdminChanged @entity(immutable: true) {
+  id: Bytes!
+  role: Bytes! # bytes32
+  previousAdminRole: Bytes! # bytes32
+  newAdminRole: Bytes! # bytes32
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type RoleGranted @entity(immutable: true) {
+  id: Bytes!
+  role: Bytes! # bytes32
+  account: Bytes! # address
+  sender: Bytes! # address
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type RoleRevoked @entity(immutable: true) {
+  id: Bytes!
+  role: Bytes! # bytes32
+  account: Bytes! # address
+  sender: Bytes! # address
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type ServiceUpdated @entity(immutable: true) {
+  id: Bytes!
+  agentAddress: Bytes! # address
+  newCid: String! # string
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type StakeUpdated @entity(immutable: true) {
+  id: Bytes!
+  agentAddress: Bytes! # address
+  oldStake: BigInt! # uint256
+  newStake: BigInt! # uint256
+  oldInitScore: BigInt! # uint256
+  newInitScore: BigInt! # uint256
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+type TreasuryUpdated @entity(immutable: true) {
+  id: Bytes!
+  oldTreasury: Bytes! # address
+  newTreasury: Bytes! # address
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}

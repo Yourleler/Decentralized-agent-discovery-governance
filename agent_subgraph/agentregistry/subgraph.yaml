@@ -1,0 +1,59 @@
+specVersion: 1.3.0
+indexerHints:
+  prune: auto
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum
+    name: AgentRegistry_v1
+    network: sepolia
+    source:
+      address: "0xb6ebea4da5e4e71558f6f2f6619410c53009d552"
+      abi: AgentRegistry_v1
+      startBlock: 10223927
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - AgentAppealed
+        - AgentRegistered
+        - AgentRestored
+        - AgentSlashed
+        - AgentUnregistered
+        - MisbehaviorReported
+        - RoleAdminChanged
+        - RoleGranted
+        - RoleRevoked
+        - ServiceUpdated
+        - StakeUpdated
+        - TreasuryUpdated
+      abis:
+        - name: AgentRegistry_v1
+          file: ./abis/AgentRegistry_v1.json
+      eventHandlers:
+        - event: AgentAppealed(indexed address,string,uint256)
+          handler: handleAgentAppealed
+        - event: AgentRegistered(indexed address,string,string,uint256,uint256)
+          handler: handleAgentRegistered
+        - event: AgentRestored(indexed address,indexed bool,uint256,uint256,string)
+          handler: handleAgentRestored
+        - event: AgentSlashed(indexed address,indexed bool,uint256,uint256,uint256,string)
+          handler: handleAgentSlashed
+        - event: AgentUnregistered(indexed address,string)
+          handler: handleAgentUnregistered
+        - event: MisbehaviorReported(indexed address,indexed address,string,uint256)
+          handler: handleMisbehaviorReported
+        - event: RoleAdminChanged(indexed bytes32,indexed bytes32,indexed bytes32)
+          handler: handleRoleAdminChanged
+        - event: RoleGranted(indexed bytes32,indexed address,indexed address)
+          handler: handleRoleGranted
+        - event: RoleRevoked(indexed bytes32,indexed address,indexed address)
+          handler: handleRoleRevoked
+        - event: ServiceUpdated(indexed address,string)
+          handler: handleServiceUpdated
+        - event: StakeUpdated(indexed address,uint256,uint256,uint256,uint256)
+          handler: handleStakeUpdated
+        - event: TreasuryUpdated(indexed address,indexed address)
+          handler: handleTreasuryUpdated
+      file: ./src/agent-registry-v-1.ts
