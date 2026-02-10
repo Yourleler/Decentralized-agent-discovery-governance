@@ -52,7 +52,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
         bool isSlashed; // 是否被罚死
         //不和注销共用是因为下线不是agent主观操作,可能被错误判罚,可以申诉解除,若使用注销逻辑信息被抹除
         bool isRegistered;
-        bool isfrozen; //由治理者决定是否冻结其注销动作,以防造假后在处理期间跑路
+        bool isfrozen; //由治理者决定是否冻结其注销动作,以防造假后在处理期间跑路,若冻结则任何资金相关操作不可进行
         address admin; // 经济责任主体
     }
 
@@ -287,12 +287,12 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
 
         uint256 stakeAmount = agents[msg.sender].stakeAmount;
 
+        // CEI: 先更新状态，再转账
         agents[msg.sender].isRegistered = false;
+        agents[msg.sender].stakeAmount = 0;
 
-        //退出 ≠ 抹除历史
         (bool success, ) = payable(msg.sender).call{value: stakeAmount}("");
         require(success, "Transfer failed");
-        agents[msg.sender].stakeAmount = 0;
 
         // agents[msg.sender].did = "";
         // agents[msg.sender].metadataCid = "";
@@ -302,7 +302,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
         // agents[msg.sender].admin = address(0);
         // agents[msg.sender].isfrozen = false;
         //didToAddress[_did] = address(0);
-        //这里不清空，就是让：一个钱包地址，终身只能注册一次 Agent。 (再次注册时，会提示 Agent already registered or was previously registered)
+        //这里不清空，就是让：一个DID，终身只能注册一次 Agent。 (再次注册时，会提示 Agent already registered or was previously registered)
         //一旦注销，该地址永久作废（在当前合约上下文中），想再次加入必须启用新的钱包地址。
         //达到防止无成本原地洗白的效果。
         emit AgentUnregistered(msg.sender, _did);
@@ -327,6 +327,8 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
     function depositStake() external payable {
         require(agents[msg.sender].isRegistered, "Agent not registered");
         require(!agents[msg.sender].isSlashed, "Agent is slashed");
+        require(!agents[msg.sender].isfrozen, "Agent is frozen");
+        require(msg.value > 0, "Must deposit non-zero amount");
 
         uint256 oldStake = agents[msg.sender].stakeAmount;
         uint256 oldInitScore = agents[msg.sender].initScore;
@@ -353,6 +355,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
     function withdrawStake(uint256 _amount) external nonReentrant {
         require(agents[msg.sender].isRegistered, "Agent not registered");
         require(!agents[msg.sender].isSlashed, "Agent is slashed");
+        require(!agents[msg.sender].isfrozen, "Agent is frozen");
         require(
             agents[msg.sender].stakeAmount >= _amount,
             "Insufficient stake"
@@ -408,6 +411,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
      * @param _evidenceCid 申诉证据CID
      */
     function appeal(string calldata _evidenceCid) external {
+        require(agents[msg.sender].isRegistered, "Agent not registered");
         require(bytes(_evidenceCid).length > 0, "Evidence CID cannot be empty");
         emit AgentAppealed(msg.sender, _evidenceCid, block.timestamp);
     }
@@ -416,6 +420,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
      * @dev 治理者冻结
      */
     function freeze(address _targetAgent) external onlyRole(GOVERNANCE_ROLE) {
+        require(agents[_targetAgent].isRegistered, "Target not registered");
         require(!agents[_targetAgent].isfrozen, "Target is frozen");
         agents[_targetAgent].isfrozen = true;
     }
@@ -424,6 +429,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
      * @dev 治理者解冻
      */
     function unfreeze(address _targetAgent) external onlyRole(GOVERNANCE_ROLE) {
+        require(agents[_targetAgent].isRegistered, "Target not registered");
         require(agents[_targetAgent].isfrozen, "Target is not frozen");
         agents[_targetAgent].isfrozen = false;
     }
@@ -447,26 +453,38 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
         // require(!agent.isSlashed, "Agent already slashed");
 
         // 先获取当前的 sGlobal（罚分前）
-        uint256 currentSGlobal = getGlobalScore(_targetAgent);
+        // --- 结晶：将已积累的时间恢复兑现到 accumulatedPenalty 中 ---
+        // 这样重置时间戳后，恢复不会凭空消失
+        uint256 daysSinceLast = 0;
+        if (agent.lastMisconductTimestamp > 0) {
+            daysSinceLast =
+                (block.timestamp - agent.lastMisconductTimestamp) /
+                1 days;
+        }
+        uint256 recovery = uint256(SCORE_RECOVERY_RATE) * daysSinceLast;
 
-        // 更新累计罚分和时间戳
+        if (recovery >= agent.accumulatedPenalty) {
+            agent.accumulatedPenalty = 0; //最多抵消不会加分
+        } else {
+            agent.accumulatedPenalty -= recovery;
+        }
+
+        // 加上本次罚分，重置时间戳
         agent.accumulatedPenalty += _penaltyScore;
         agent.lastMisconductTimestamp = block.timestamp;
 
-        // --- 基于当前 sGlobal 判断是否罚没 ---
-        // 如果当前 sGlobal 减去本次罚分后会低于或等于 SCORE_MIN，则置为罚没状态
-        if (
-            currentSGlobal <= _penaltyScore ||
-            currentSGlobal - _penaltyScore <= SCORE_MIN
-        ) {
+        // --- 基于实际罚后分数判断是否罚没 ---
+        // 恢复已结晶，getGlobalScore 返回的就是真实状态
+        uint256 newSGlobal = getGlobalScore(_targetAgent);
+        if (newSGlobal <= SCORE_MIN) {
             agent.isSlashed = true;
         }
         // --------------------
-
+        uint256 actualSlashAmount = _slashEth;
         if (_slashEth > 0) {
             // --- 建议优化：避免“余额不足”导致无法罚款 ---
             // 如果只有 0.5 ETH 但要罚 1 ETH，直接扣光所有，而不是报错回滚
-            uint256 actualSlashAmount = _slashEth;
+
             if (agent.stakeAmount < _slashEth) {
                 actualSlashAmount = agent.stakeAmount;
             }
@@ -483,7 +501,7 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
             agent.isSlashed, // 注意：事件里最好传当前最新的状态
             _penaltyScore,
             agent.accumulatedPenalty,
-            _slashEth, // 或者 actualSlashAmount
+            actualSlashAmount,
             _reason
         );
     }

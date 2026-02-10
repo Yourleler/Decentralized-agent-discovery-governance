@@ -46,5 +46,11 @@
     },
     "agents/holder/data": {
         "description": "其中持有者视角的记录,后续应该改进同一为另一个data文件夹的xx to xx格式"
+    },
+    "agent_subgraph/agentregistry/schema.graphql": {
+        "description": "数据库结构定义"
+    },
+    "agent_subgraph/agentregistry/subgraph.yaml": {
+        "description": "监听配置 + 总入口"
     }
 }
