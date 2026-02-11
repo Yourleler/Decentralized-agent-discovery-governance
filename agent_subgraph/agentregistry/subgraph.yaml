@@ -5,7 +5,7 @@ schema:
   file: ./schema.graphql
 dataSources:
   - kind: ethereum
-    name: AgentRegistry Sepolia
+    name: AgentRegistry_v1
     network: sepolia
     source:
       address: "0x5e325877df7a15a67799544d1319aaf67ee8dfaf"
