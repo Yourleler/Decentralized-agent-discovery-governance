@@ -5,6 +5,8 @@
         "https://sepolia.drpc.org",
         "https://sepolia.gateway.tenderly.co"
     ],
+    "pinata_jwt": "YOUR_PINATA_JWT_HERE",
+    "pinata_gateway": "YOUR_GATEWAY.mypinata.cloud",
     "qwq_api_key": "YOUR_LLM_API_KEY_HERE",
     "llm_config": {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
