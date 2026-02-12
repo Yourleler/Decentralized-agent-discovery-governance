@@ -14,7 +14,9 @@
     "@openzeppelin/contracts": "^5.4.0",
     "@prb/math": "^4.1.0",
     "did-resolver": "^4.1.0",
+    "dotenv": "^17.2.4",
     "ethr-did-resolver": "^11.0.5",
+    "pinata": "^2.5.4",
     "solady": "^0.1.26",
     "solmate": "^6.8.0"
   },
