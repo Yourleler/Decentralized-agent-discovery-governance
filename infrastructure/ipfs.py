@@ -238,7 +238,7 @@ async def _fetch_url_async(client: httpx.AsyncClient, url: str) -> bytes:
     wait=wait_exponential(multiplier=1, min=2, max=10),
     retry=retry_if_exception_type(IPFSGatewayError),
     reraise=True
-)
+)#重试3次，每次等待时间指数级增长，最多等待10秒，重试类型为IPFSGatewayError，重试后重新抛出异常
 async def fetch_race_async(cid: str) -> bytes:
     """
     [核心] 异步网关竞速下载
@@ -262,9 +262,12 @@ async def fetch_race_async(cid: str) -> bytes:
         ]
         
         try:
-            # as_completed 返回 iterator，第一个完成的 task 即为胜者
-            # 注意：as_completed 不会等待所有任务完成，它是 yield 出来的
-            # 我们需要捕获异常，如果第一个 yield 出来的是异常，还得继续等下一个
+            # as_completed 返回 iterator，按完成顺序 yield (谁快谁先出)。
+            # 这里的机制类似于：
+            # 1. create_task 开启了"虚拟机/沙盒"，任务在其中独立运行，异常也被隔离在 Task 对象中。
+            # 2. await future 是"开箱"过程：将沙盒内的结果（数据或异常）释放到主控流程中。
+            #    - 若成功：拿到数据。
+            #    - 若失败：在此处重新抛出异常（"引爆"错误），被下方 except 捕获从而忽略该失败节点。
             for future in asyncio.as_completed(tasks):
                 try:
                     content = await future
@@ -318,17 +321,30 @@ async def fetch_and_verify_async(cid: str) -> dict:
         "raw": content_bytes,
         "sha256": sha256_hash,
         "cid": cid,
-        "verified": True # 只要能通过 CID 下载下来，且内容没变，就是 Verified (CID 自校验特性)
+        # 目前 verification 依赖于 HTTPS 网关的可信度。
+        # 严格的 CID 校验需要本地复刻 IPFS 的 DAG 分块与哈希算法 (需引入 ipfs-cid 库)，
+        # 对于 Agent Metadata 这种小文件，Risk 较低，暂时通过 SHA256 用于事后审计(Metadata里面最好最带hash用于校验)
+        "verified": True 
     }
 
 async def fetch_batch_async(cids: List[str], max_workers: int = 5) -> Dict[str, bytes]:
     """
     [Async] 批量并发下载 (利用 Semaphore 控制并发度)
+    
+    注意：采用 Best-Effort 策略。
+    - 下载失败的任务会被沉默丢弃 (只打印 ERROR 日志)。
+    - 返回的字典可能少于输入的 cids 数量。
     """
     sem = asyncio.Semaphore(max_workers)
     results = {}
     
     async def _bounded_fetch(cid):
+        # async with sem: 上下文管理器 (Context Manager)
+        # 1. 自动管理凭证：进入时 acquire() 拿锁/领证，退出时 release() 还锁/归还。
+        # 2. 也是并发控制的核心：
+        #    - 这是一个"协程版"的信号量，非系统线程。
+        #    - 限制同时处于"活跃状态" (Running) 的协程数量，防止 IO 爆炸。
+        #    - 相比线程池 (ThreadPool)，协程切换开销极小，更适合高并发网络请求。
         async with sem:
             try:
                 data = await fetch_race_async(cid)
@@ -337,9 +353,17 @@ async def fetch_batch_async(cids: List[str], max_workers: int = 5) -> Dict[str, 
                 LOGGER.error(f"[IPFS] Batch fetch failed for {cid}: {e}")
                 return cid, None
 
-    tasks = [_bounded_fetch(cid) for cid in cids]
+    tasks = [asyncio.create_task(_bounded_fetch(cid)) for cid in cids]
+    # await asyncio.gather: "集中拆箱"
+    # 1. 并发执行所有 Task，并等待全部完成 (Gathering)。
+    # 2. 按输入顺序返回结果列表: [(cid1, data1), (cid2, None), ...]。
+    #    即使中间有的任务很快完成，也会在列表中占好位子等待其他任务。
     done_results = await asyncio.gather(*tasks)
     
+    # 过滤失败任务 (Best-Effort 策略)
+    # 这里的逻辑是：只返回下载成功的数据，悄悄丢弃失败的 (None)。
+    # 调用者拿到的 results 字典可能少于入参 cids 的数量。
+    # 若需严格一致性 (All-or-Nothing)，调用者需自行比对 results.keys() 与 cids。
     for cid, data in done_results:
         if data is not None:
             results[cid] = data
@@ -359,12 +383,12 @@ def _run_sync(coro):
     注意：在 FastAPI 中应直接使用 async 版本，此处仅作兜底兼容。
     """
     try:
-        loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()#获取当前正在运行的事件循环的函数
     except RuntimeError:
-        # 没有正在运行的事件循环，安全使用 asyncio.run()
+        # 没有正在运行的事件循环，安全使用 asyncio.run()启动事件循环并执行传入的协程
         return asyncio.run(coro)
     else:
-        # 已有事件循环 -> 不能用 asyncio.run()，
+        # 已有事件循环(try中未抛出异常) -> 不能用 asyncio.run()，
         # 创建新线程执行以避免阻塞事件循环
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -391,7 +415,10 @@ def fetch_and_verify(cid: str) -> dict:
     return _run_sync(fetch_and_verify_async(cid))
 
 def fetch_batch(cids: List[str], max_workers: int = 5) -> Dict[str, bytes]:
-    """[Sync] fetch_batch_async 的同步封装"""
+    """
+    [Sync] fetch_batch_async 的同步封装
+    同样采用 Best-Effort 策略，失败的任务会被丢弃。
+    """
     return _run_sync(fetch_batch_async(cids, max_workers))
 
 
@@ -448,6 +475,6 @@ IPFS 工具 (Async/Sync Hybrid)
             # 验证缓存是否存在
             cache_path = CACHE_DIR / cid
             if cache_path.exists():
-                print("💾 本地缓存已命中")
+                print("💾 本地缓存已完成")
         except Exception as e:
             print(f"❌ 下载失败: {e}")
