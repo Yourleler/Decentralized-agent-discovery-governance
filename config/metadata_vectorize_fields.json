@@ -1,0 +1,140 @@
+{
+  "version": "1.0.0",
+  "source_reference": {
+    "capability_discovery": "reference/capability_discovery.py",
+    "registry_base": "reference/registry_base.py"
+  },
+  "embedding": {
+    "provider": "sentence-transformers",
+    "model_name": "sentence-transformers/all-mpnet-base-v2",
+    "cache_folder": "./.cache/huggingface/embeddings",
+    "normalize_embeddings": true
+  },
+  "vector_store": {
+    "backend": "chromadb",
+    "persist_directory": "./cache/chroma/agent_metadata",
+    "collection_name": "agent_metadata_v1",
+    "distance_metric": "cosine"
+  },
+  "fusion_pipeline": {
+    "description": "先融合子图字段与IPFS元数据并计算本地分，再写本地缓存与向量库。",
+    "subgraph_fields": [
+      "did",
+      "cid",
+      "initScore",
+      "penalty",
+      "lastTime",
+      "isSlashed"
+    ],
+    "ipfs_metadata_source": "agent_metadata_format.schema.json",
+    "compute_before_cache": [
+      "s_global",
+      "s_local",
+      "w_confidence",
+      "s_final",
+      "runtime_availability"
+    ]
+  },
+  "local_cache": {
+    "backend": "sqlite",
+    "db_path": "./cache/sidecar/sidecar_state.db",
+    "tables": {
+      "agent_state": {
+        "primary_key": "agentDid",
+        "required_fields": [
+          "agentDid",
+          "cid",
+          "s_global",
+          "s_local",
+          "w_confidence",
+          "s_final",
+          "isSlashed",
+          "last_synced_block",
+          "updated_at"
+        ]
+      },
+      "sync_state": {
+        "primary_key": "key",
+        "required_fields": [
+          "key",
+          "value"
+        ]
+      }
+    }
+  },
+  "document_id_rule": {
+    "pattern": "{agentDid}:{capabilityId}",
+    "fallback_pattern": "{agentDid}:{capabilityName}"
+  },
+  "metadata_keys_for_filter": [
+    "agentDid",
+    "adminAddress",
+    "domain",
+    "serviceName",
+    "capabilityId",
+    "capabilityName",
+    "lazyFetch"
+  ],
+  "vector_text_template": {
+    "description": "参考 capability_discovery.py 的 'name + description'，扩展为 service + capability 多字段拼接。",
+    "global_format": "{service.summary}\n领域:{service.domain}\n标签:{service.tags}\n关键词:{indexHints.searchableKeywords}",
+    "per_capability_format": "能力:{capability.name}\n描述:{capability.description}\n输入:{capability.inputs}\n输出:{capability.outputs}\n示例:{capability.examples}",
+    "joiner": "\n---\n"
+  },
+  "retrieval": {
+    "top_k": 20,
+    "return_limit": 10,
+    "similarity_threshold": 0.1,
+    "deduplicate_by": "agentDid",
+    "filter_before_rank": {
+      "exclude_is_slashed": true,
+      "exclude_unavailable": true,
+      "min_s_global": 40
+    },
+    "ranking": {
+      "description": "先语义召回，再与本地缓存分融合排序。",
+      "semantic_weight": 0.6,
+      "trust_weight": 0.4,
+      "trust_source_field": "s_final",
+      "normalize_semantic_score_to_0_1": true,
+      "final_score_formula": "semantic_score * semantic_weight + normalized_trust_score * trust_weight"
+    }
+  },
+  "fallback_search": {
+    "enabled": true,
+    "type": "jaccard",
+    "description": "参考 capability_discovery.py 的字符串相似度兜底策略。"
+  },
+  "sync_mode": {
+    "strategy": "incremental",
+    "subgraph_watermark_key": "last_synced_block",
+    "rebuild_policy": {
+      "on_start_if_empty": true,
+      "on_metadata_schema_change": true,
+      "on_mass_update_ratio_gt": 0.3
+    }
+  },
+  "scoring_model": {
+    "description": "与设计规划一致的链上+链下融合评分配置（简化版）。",
+    "s_global": {
+      "formula": "min(initScore, initScore - penalty + recovery_rate_per_day * days_since_last)",
+      "recovery_rate_per_day": 2
+    },
+    "s_local": {
+      "initial_alpha": 1.0,
+      "initial_beta": 1.0,
+      "k_fail": 2.0,
+      "k_succeed": 0.5,
+      "half_life_days": 30,
+      "delta": 0.2,
+      "k": 0.8
+    },
+    "w_confidence": {
+      "lambda": 0.15,
+      "c": 10
+    },
+    "s_final": {
+      "formula": "s_global * s_local * w_confidence"
+    }
+  }
+}

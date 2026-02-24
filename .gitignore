@@ -61,3 +61,6 @@ paper.md
 合约AgentRegistry_v1.0.txt
 .ipfs_cache/
 .agent/workflows/zhushi.md
+AGENTS.md
+reference/registry_base.py
+reference/capability_discovery.py

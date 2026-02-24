@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dagg.local/schemas/vp-format.schema.json",
+  "title": "Agent VP Format",
+  "description": "用于握手阶段的 VP 格式。兼容当前 infrastructure/validator.py。",
+  "type": "object",
+  "required": [
+    "@context",
+    "type",
+    "holder",
+    "verifiableCredential",
+    "proof"
+  ],
+  "properties": {
+    "@context": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "contains": {
+        "const": "VerifiablePresentation"
+      }
+    },
+    "holder": {
+      "type": "string",
+      "description": "Holder DID（当前验证器以此做验签/一致性校验）。"
+    },
+    "holderBinding": {
+      "type": "object",
+      "description": "扩展字段：用于 Admin/OP 分离追责。",
+      "properties": {
+        "agentDid": {
+          "type": "string"
+        },
+        "adminAddress": {
+          "type": "string"
+        },
+        "opAddress": {
+          "type": "string"
+        },
+        "opKid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agentDid"
+      ],
+      "additionalProperties": true
+    },
+    "verifiableCredential": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "minItems": 1
+    },
+    "proof": {
+      "type": "object",
+      "required": [
+        "type",
+        "created",
+        "verificationMethod",
+        "proofPurpose",
+        "challenge",
+        "jws"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "default": "EcdsaSecp256k1RecoverySignature2020"
+        },
+        "created": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "verificationMethod": {
+          "type": "string",
+          "description": "建议填 OP kid（例如 did:...#delegate-1）。"
+        },
+        "proofPurpose": {
+          "type": "string",
+          "default": "authentication"
+        },
+        "challenge": {
+          "type": "string",
+          "description": "握手 nonce。"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "jws": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "session": {
+      "type": "object",
+      "description": "可选：会话审计字段。",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "verifierDid": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
+

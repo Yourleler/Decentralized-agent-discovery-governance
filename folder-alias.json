@@ -52,5 +52,20 @@
     },
     "agent_subgraph/agentregistry/subgraph.yaml": {
         "description": "监听配置 + 总入口"
+    },
+    "config/vc_format.schema.json": {
+        "description": "通用 VC 外壳格式"
+    },
+    "config/vp_format.schema.json": {
+        "description": "握手用 VP 格式"
+    },
+    "config/agent_metadata_format.schema.json": {
+        "description": "上链 CID 指向的元数据格式"
+    },
+    "config/vc_vp_metadata_example.json": {
+        "description": "三种格式的示例数据"
+    },
+    "config/metadata_vectorize_fields.json": {
+        "description": "Sidecar 向量化与检索策略配置"
     }
 }

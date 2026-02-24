@@ -1,0 +1,113 @@
+{
+  "metadata": {
+    "metadataVersion": "1.0.0",
+    "agentDid": "did:ethr:sepolia:0xYourAdminAddress",
+    "adminAddress": "0xYourAdminAddress",
+    "opBinding": {
+      "enabled": true,
+      "defaultKid": "did:ethr:sepolia:0xYourAdminAddress#delegate-1",
+      "opPool": [
+        {
+          "kid": "did:ethr:sepolia:0xYourAdminAddress#delegate-1",
+          "address": "0xYourOpAddress1"
+        }
+      ]
+    },
+    "service": {
+      "name": "Forecast Agent",
+      "summary": "专注金融时间序列预测，支持分钟级与日级多维预测任务。",
+      "domain": "finance",
+      "tags": [
+        "forecast",
+        "timeseries",
+        "risk"
+      ],
+      "interactionModes": [
+        "A2A_HTTP",
+        "JSON_RPC"
+      ],
+      "endpoints": [
+        {
+          "name": "primary-api",
+          "url": "https://agent.example.com/api/v1",
+          "protocol": "https",
+          "auth": "did-sig",
+          "sla": "p95<800ms"
+        }
+      ]
+    },
+    "capabilities": [
+      {
+        "id": "cap.forecast.1",
+        "name": "Financial Forecasting",
+        "description": "根据历史 OHLCV 与宏观指标，输出未来 1h/24h 价格区间预测。",
+        "inputs": [
+          "symbol",
+          "timeframe",
+          "historyWindow"
+        ],
+        "outputs": [
+          "predictedRange",
+          "confidence"
+        ],
+        "examples": [
+          "预测 BTC 在未来24小时的价格区间"
+        ]
+      }
+    ],
+    "vcManifest": {
+      "holderDid": "did:ethr:sepolia:0xYourAdminAddress",
+      "types": [
+        "AgentIdentityCredential",
+        "AgentModelCredential",
+        "AgentCapabilityCredential",
+        "AgentToolsetCredential",
+        "AgentComplianceCredential"
+      ],
+      "lazyFetch": true,
+      "fullVcRefs": [
+        {
+          "type": "AgentIdentityCredential",
+          "cid": "bafybeihxxxx"
+        }
+      ]
+    },
+    "indexHints": {
+      "vectorText": "金融预测 agent，擅长 BTC/ETH 时间序列建模、风险评估、区间预测。",
+      "searchableKeywords": [
+        "金融预测",
+        "时间序列",
+        "风控"
+      ]
+    },
+    "timestamps": {
+      "createdAt": "2026-02-24T10:00:00Z",
+      "updatedAt": "2026-02-24T10:00:00Z"
+    }
+  },
+  "vp": {
+    "@context": [
+      "https://www.w3.org/2018/credentials/v1"
+    ],
+    "type": [
+      "VerifiablePresentation"
+    ],
+    "holder": "did:ethr:sepolia:0xYourAdminAddress",
+    "holderBinding": {
+      "agentDid": "did:ethr:sepolia:0xYourAdminAddress",
+      "adminAddress": "0xYourAdminAddress",
+      "opAddress": "0xYourOpAddress1",
+      "opKid": "did:ethr:sepolia:0xYourAdminAddress#delegate-1"
+    },
+    "verifiableCredential": [],
+    "proof": {
+      "type": "EcdsaSecp256k1RecoverySignature2020",
+      "created": "2026-02-24T10:00:00Z",
+      "verificationMethod": "did:ethr:sepolia:0xYourAdminAddress#delegate-1",
+      "proofPurpose": "authentication",
+      "challenge": "nonce-from-verifier",
+      "jws": "0xsignature"
+    }
+  }
+}
+

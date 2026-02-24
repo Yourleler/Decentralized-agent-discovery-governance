@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dagg.local/schemas/vc-format.schema.json",
+  "title": "Agent VC Format",
+  "description": "通用 VC 外层格式。具体 claims 由 vc_schemas/vc1~vc5 约束。",
+  "type": "object",
+  "required": [
+    "@context",
+    "type",
+    "issuer",
+    "issuanceDate",
+    "credentialSubject",
+    "proof"
+  ],
+  "properties": {
+    "@context": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "id": {
+      "type": "string",
+      "description": "可选 VC 唯一 ID，如 urn:uuid:* 或 URL。"
+    },
+    "type": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "contains": {
+        "const": "VerifiableCredential"
+      }
+    },
+    "issuer": {
+      "type": "string",
+      "description": "Issuer DID，例如 did:ethr:sepolia:0x..."
+    },
+    "issuanceDate": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "validFrom": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "validUntil": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "credentialSubject": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Holder DID。需与 VP holder 一致。"
+        },
+        "agentDid": {
+          "type": "string",
+          "description": "可选。冗余存储 Agent DID 便于跨模块追责。"
+        },
+        "claimsVersion": {
+          "type": "string",
+          "default": "1.0.0"
+        }
+      },
+      "additionalProperties": true
+    },
+    "credentialStatus": {
+      "type": "object",
+      "description": "可选吊销状态对象。"
+    },
+    "evidence": {
+      "type": "array",
+      "description": "可选证据列表（benchmark、审计报告、PoM 等）。",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "cid": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": [
+        "type",
+        "created",
+        "verificationMethod",
+        "proofPurpose",
+        "jws"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "default": "EcdsaSecp256k1RecoverySignature2020"
+        },
+        "created": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "verificationMethod": {
+          "type": "string"
+        },
+        "proofPurpose": {
+          "type": "string"
+        },
+        "jws": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
+
