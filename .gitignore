@@ -64,3 +64,5 @@ paper.md
 AGENTS.md
 reference/registry_base.py
 reference/capability_discovery.py
+_demo_2v2/data/
+agents/holder/data/

@@ -1,8 +1,10 @@
 // 这是一个 Node.js 脚本，专门用于调用官方库解析 DID
+// 项目启用了 ESM（package.json: "type": "module"），这里用 createRequire 兼容 CJS 依赖写法。
+import { createRequire } from 'module';
 
+const require = createRequire(import.meta.url);
 const { Resolver } = require('did-resolver');
 const { getResolver } = require('ethr-did-resolver');
-const { providers } = require('ethers'); // 引入 ethers 库
 
 // 1. 从命令行接收参数: python 会把参数传到这里
 // args[0] 是 DID, args[1] 是 API URL

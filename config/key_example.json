@@ -1,5 +1,7 @@
 {
     "api_url": "https://ethereum-sepolia.publicnode.com",
+    "subgraph_url": "https://api.studio.thegraph.com/query/1740029/agent-registry-sepolia/version/latest",
+    "subgraph_api_key": "YOUR_KEY",
     "api_url_pool": [
     "https://ethereum-sepolia.publicnode.com",
     "https://sepolia.drpc.org",
