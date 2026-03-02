@@ -66,3 +66,4 @@ reference/registry_base.py
 reference/capability_discovery.py
 _demo_2v2/data/
 agents/holder/data/
+agents/verifier/data/memory_did_ethr_sepolia_0x59dEBEf1A4eb1d46fA4410ca27445D5aCB4313b1_to_did_ethr_sepolia_0x4791364B14574fF69520F1AAD8bb7192Eeea2ffF.json

@@ -8,9 +8,9 @@ dataSources:
     name: AgentRegistry_v1
     network: sepolia
     source:
-      address: "0x5e325877df7a15a67799544d1319aaf67ee8dfaf"
+      address: "0x28249C2F09eF3196c1B42a0110dDD02D3B2b59B7"
       abi: AgentRegistry_v1
-      startBlock: 10230845
+      startBlock: 10360859
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.9

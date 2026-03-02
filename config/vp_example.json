@@ -1,0 +1,49 @@
+{
+  "@context": [
+    "https://www.w3.org/2018/credentials/v1"
+  ],
+  "type": [
+    "VerifiablePresentation"
+  ],
+  "holder": "did:ethr:sepolia:0xYourAdminAddress",
+  "holderBinding": {
+    "agentDid": "did:ethr:sepolia:0xYourAdminAddress",
+    "adminAddress": "0xYourAdminAddress",
+    "opAddress": "0xYourOpAddress1",
+    "opKid": "did:ethr:sepolia:0xYourAdminAddress#delegate"
+  },
+  "verifiableCredential": [
+    {
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2",
+        "https://schema.org"
+      ],
+      "type": [
+        "VerifiableCredential",
+        "AgentIdentityCredential"
+      ],
+      "issuer": "did:ethr:sepolia:0xIssuerAddress",
+      "validFrom": "2026-03-01T10:00:00Z",
+      "validUntil": "2027-03-01T10:00:00Z",
+      "credentialSubject": {
+        "id": "did:ethr:sepolia:0xYourAdminAddress",
+        "agent_name": "Forecast Agent"
+      },
+      "proof": {
+        "type": "EcdsaSecp256k1Signature2019",
+        "created": "2026-03-01T10:00:00Z",
+        "verificationMethod": "did:ethr:sepolia:0xIssuerAddress#controller",
+        "proofPurpose": "assertionMethod",
+        "jws": "0xissuer-signature"
+      }
+    }
+  ],
+  "proof": {
+    "type": "EcdsaSecp256k1RecoverySignature2020",
+    "created": "2026-03-01T10:00:01Z",
+    "verificationMethod": "did:ethr:sepolia:0xYourAdminAddress#delegate",
+    "proofPurpose": "authentication",
+    "challenge": "nonce-from-verifier",
+    "jws": "0xholder-signature"
+  }
+}

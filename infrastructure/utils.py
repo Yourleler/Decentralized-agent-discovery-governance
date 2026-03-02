@@ -2,54 +2,41 @@ import random
 import json
 import hashlib
 import itertools
+import datetime
 from web3 import Web3
 
-# === 引用同级模块 ===
 from .load_config import load_key_config
 
 _RPC_CYCLE = None
 
-ETH_PRICE_USD = 2930.0  # 2026/1/29 根据实时行情调整，多来源平均 
+ETH_PRICE_USD = 2930.0  # 2026/1/29
+
 
 def get_rpc_url():
     """
-    [修改] 从配置池中轮询获取 RPC 节点
-    策略：随机起点 + 顺序轮询 (Random-Start Round-Robin)
-    优势：既保证了单一进程内的负载均衡，又防止了多进程启动时产生'惊群效应'
+    从配置池中轮询获取 RPC 节点
+    策略：随机起点 + 顺序轮询
     """
     global _RPC_CYCLE
-    config = load_key_config() #从key读取的key.json
-    
-    # 优先检查是否有节点池
+    config = load_key_config()
+
     if "api_url_pool" in config and isinstance(config["api_url_pool"], list) and len(config["api_url_pool"]) > 0:
         pool = config["api_url_pool"]
-        
-        # 如果是第一次调用（或者新进程启动），初始化迭代器
         if _RPC_CYCLE is None:
-            # 1. 为了防止多进程同时启动时都打在第1个节点上，
-            #    我们在初始化时随机打乱一下顺序，或者随机选一个起点
             start_index = random.randint(0, len(pool) - 1)
-            
-            # 2. 创建一个无限循环的迭代器
-            # 例如 pool=[A, B, C], start_index=1, 顺序就是 B -> C -> A -> B ...
             rotated_pool = pool[start_index:] + pool[:start_index]
             _RPC_CYCLE = itertools.cycle(rotated_pool)
-            
-        # 3. 获取下一个节点
+
         selected_url = next(_RPC_CYCLE)
         return selected_url, config
-    
-    # 回退到单点配置
+
     return config["api_url"], config
- 
+
+
 def get_w3():
-    """
-    初始化 Web3 连接
-    现在通过统一的 load_key_config 获取配置，更加健壮
-    """
+    """初始化 Web3 连接"""
     try:
         rpc_url, config = get_rpc_url()
-        
         w3 = Web3(Web3.HTTPProvider(rpc_url))
         if not w3.is_connected():
             print(f"[Network] 连接失败，请检查 API URL: {rpc_url}")
@@ -59,10 +46,11 @@ def get_w3():
         print(f"[Network] 初始化异常: {e}")
         exit(1)
 
-# ethr:did 注册表地址 (Sepolia)
+
+# ethr:did registry 地址（Sepolia）
 REGISTRY_ADDRESS = "0x03d5003bf0e79C5F5223588F347ebA39AfbC3818"
 
-# ===  ERC-1056 DID Registry 的 ABI ===
+# ERC-1056 DID Registry ABI
 REGISTRY_ABI = [
     {
         "constant": False,
@@ -133,34 +121,295 @@ REGISTRY_ABI = [
     }
 ]
 
-# === 通用内存管理函数 ===
 
 def load_memory(file_path):
     """安全加载 JSON 文件，若不存在返回空列表"""
-    import os # 局部引入，保持整洁
+    import os
     if not os.path.exists(file_path):
         return []
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         print(f"[Warning] Failed to load memory from {file_path}: {e}")
         return []
 
+
 def save_memory(file_path, memory_data):
     """保存数据到 JSON 文件"""
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             json.dump(memory_data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[Error] Failed to save memory to {file_path}: {e}")
 
+
 def calculate_memory_hash(memory_data):
     """计算哈希，用于签名和校验"""
     serialized = json.dumps(
-        memory_data, 
-        sort_keys=True, 
-        separators=(',', ':'), 
+        memory_data,
+        sort_keys=True,
+        separators=(",", ":"),
         ensure_ascii=False
     )
-    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _utc_now_iso():
+    """返回 UTC 时间（ISO 8601, Z 结尾）"""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def generate_agent_metadata(
+    agent_did,
+    admin_address,
+    service_name,
+    service_summary,
+    service_domain,
+    endpoint_url,
+    capability_name,
+    capability_description,
+    capability_id="cap.default.v1",
+    capability_inputs=None,
+    capability_outputs=None,
+    capability_examples=None,
+    tags=None,
+    interaction_modes=None,
+    vc_types=None,
+    full_vc_refs=None,
+    searchable_keywords=None,
+    vector_text=None,
+    metadata_version="2.0.0"
+):
+    """
+    生成 metadata（对齐 config/agent_metadata_format.schema.json）
+
+    参数说明:
+        agent_did (str): Agent DID（链上注册主体）。
+        admin_address (str): 管理员地址。
+        service_name (str): 服务名称。
+        service_summary (str): 服务摘要描述。
+        service_domain (str): 服务领域，例如 finance。
+        endpoint_url (str): 主服务端点 URL。
+        capability_name (str): 能力名称。
+        capability_description (str): 能力描述。
+        capability_id (str): 能力唯一 ID。
+        capability_inputs (list[str] | None): 能力输入字段列表。
+        capability_outputs (list[str] | None): 能力输出字段列表。
+        capability_examples (list[str] | None): 能力示例列表。
+        tags (list[str] | None): 服务标签。
+        interaction_modes (list[str] | None): 交互模式列表。
+        vc_types (list[str] | None): 支持的 VC 类型列表。
+        full_vc_refs (list[dict] | None): VC 引用信息列表。
+        searchable_keywords (list[str] | None): 检索关键词。
+        vector_text (str | None): 向量化文本；为空时自动生成。
+        metadata_version (str): metadata 版本号。
+
+    返回:
+        dict: metadata payload。
+    """
+    now_iso = _utc_now_iso()
+
+    if capability_inputs is None:
+        capability_inputs = []
+    if capability_outputs is None:
+        capability_outputs = []
+    if capability_examples is None:
+        capability_examples = []
+    if tags is None:
+        tags = []
+    if interaction_modes is None:
+        interaction_modes = ["A2A_HTTP"]
+    if vc_types is None:
+        vc_types = ["AgentIdentityCredential"]
+    if full_vc_refs is None:
+        full_vc_refs = []
+    if searchable_keywords is None:
+        searchable_keywords = []
+    if vector_text is None:
+        vector_text = f"{service_summary}\nDomain: {service_domain}\nCapability: {capability_name}"
+
+    return {
+        "metadataVersion": metadata_version,
+        "agentDid": agent_did,
+        "adminAddress": admin_address,
+        "service": {
+            "name": service_name,
+            "summary": service_summary,
+            "domain": service_domain,
+            "tags": tags,
+            "interactionModes": interaction_modes,
+            "endpoints": [
+                {
+                    "name": "primary-api",
+                    "url": endpoint_url,
+                    "protocol": "https",
+                    "auth": "did-sig"
+                }
+            ]
+        },
+        "capabilities": [
+            {
+                "id": capability_id,
+                "name": capability_name,
+                "description": capability_description,
+                "inputs": capability_inputs,
+                "outputs": capability_outputs,
+                "examples": capability_examples
+            }
+        ],
+        "vcManifest": {
+            "holderDid": agent_did,
+            "types": vc_types,
+            "lazyFetch": True,
+            "fullVcRefs": full_vc_refs
+        },
+        "indexHints": {
+            "vectorText": vector_text,
+            "searchableKeywords": searchable_keywords
+        },
+        "timestamps": {
+            "createdAt": now_iso,
+            "updatedAt": now_iso
+        }
+    }
+
+
+def generate_vc_payload(
+    holder_did,
+    issuer_did,
+    vc_type="AgentIdentityCredential",
+    subject_claims=None,
+    valid_days=365,
+    proof_jws=None,
+    proof_type="EcdsaSecp256k1Signature2019",
+    proof_purpose="assertionMethod",
+    verification_method=None
+):
+    """
+    生成 VC（对齐 config/vc_format.schema.json）
+
+    参数说明:
+        holder_did (str): 持有者 DID（写入 credentialSubject.id）。
+        issuer_did (str): 发证者 DID。
+        vc_type (str): VC 业务类型，例如 AgentIdentityCredential。
+        subject_claims (dict | None): credentialSubject 的扩展 claims。
+            注意：不允许覆盖 id/agentDid 为其他值。
+        valid_days (int): 有效天数。
+        proof_jws (str | None): 发证方真实签名（必填）。
+        proof_type (str): proof.type。
+        proof_purpose (str): proof.proofPurpose。
+        verification_method (str | None): proof.verificationMethod；
+            为空时默认 "{issuer_did}#controller"。
+
+    返回:
+        dict: VC payload。
+    """
+    if subject_claims is None:
+        subject_claims = {}
+    if not proof_jws:
+        raise ValueError("proof_jws 不能为空，必须传入发证方真实签名。")
+
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    valid_until_dt = now_dt + datetime.timedelta(days=valid_days)
+    valid_from = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    valid_until = valid_until_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if verification_method is None:
+        verification_method = f"{issuer_did}#controller"
+
+    credential_subject = {
+        "id": holder_did,
+        "agentDid": holder_did,
+        "claimsVersion": "1.0.0"
+    }
+    safe_subject_claims = dict(subject_claims)
+    if "id" in safe_subject_claims and safe_subject_claims["id"] != holder_did:
+        raise ValueError("subject_claims.id 不能与 holder_did 不一致。")
+    if "agentDid" in safe_subject_claims and safe_subject_claims["agentDid"] != holder_did:
+        raise ValueError("subject_claims.agentDid 不能与 holder_did 不一致。")
+    safe_subject_claims.pop("id", None)
+    safe_subject_claims.pop("agentDid", None)
+    credential_subject.update(safe_subject_claims)
+
+    return {
+        "@context": [
+            "https://www.w3.org/ns/credentials/v2",
+            "https://schema.org"
+        ],
+        "type": [
+            "VerifiableCredential",
+            vc_type
+        ],
+        "issuer": issuer_did,
+        "validFrom": valid_from,
+        "validUntil": valid_until,
+        "credentialSubject": credential_subject,
+        "proof": {
+            "type": proof_type,
+            "created": _utc_now_iso(),
+            "verificationMethod": verification_method,
+            "proofPurpose": proof_purpose,
+            "jws": proof_jws
+        }
+    }
+
+
+def generate_vp_payload(
+    holder_did,
+    nonce,
+    verifiable_credentials=None,
+    holder_binding=None,
+    proof_jws=None,
+    proof_type="EcdsaSecp256k1RecoverySignature2020",
+    proof_purpose="authentication",
+    verification_method=None
+):
+    """
+    生成 VP（对齐 config/vp_format.schema.json）
+
+    参数说明:
+        holder_did (str): VP 持有者 DID。
+        nonce (str): verifier 下发的 challenge/nonce。
+        verifiable_credentials (list[dict] | None): 要携带的 VC 列表。
+        holder_binding (dict | None): 持有者绑定信息；
+            为空时默认仅包含 {"agentDid": holder_did}。
+        proof_jws (str | None): holder 真实签名（必填）。
+        proof_type (str): proof.type。
+        proof_purpose (str): proof.proofPurpose。
+        verification_method (str | None): proof.verificationMethod；
+            为空时默认 "{holder_did}#delegate"，与 wallet.create_vp 对齐。
+
+    返回:
+        dict: VP payload。
+    """
+    if verifiable_credentials is None:
+        verifiable_credentials = []
+    if holder_binding is None:
+        holder_binding = {
+            "agentDid": holder_did
+        }
+    if not proof_jws:
+        raise ValueError("proof_jws 不能为空，必须传入 holder 真实签名。")
+    if verification_method is None:
+        verification_method = f"{holder_did}#delegate"
+
+    return {
+        "@context": [
+            "https://www.w3.org/2018/credentials/v1"
+        ],
+        "type": [
+            "VerifiablePresentation"
+        ],
+        "holder": holder_did,
+        "holderBinding": holder_binding,
+        "verifiableCredential": verifiable_credentials,
+        "proof": {
+            "type": proof_type,
+            "created": _utc_now_iso(),
+            "verificationMethod": verification_method,
+            "proofPurpose": proof_purpose,
+            "challenge": nonce,
+            "jws": proof_jws
+        }
+    }

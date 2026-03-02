@@ -23,11 +23,13 @@ from web3 import Web3
 
 # === 1. 实验参数与配置 ===
 # --- 可调参数 ---
-NUM_VERIFIERS = 3                   # 生成账户数量
+NUM_VERIFIERS = 3
+NUM_HOLDERS = 3                   # 生成账户数量
 FUND_AMOUNT = 0.005                 # 给每个 Admin 转账的金额 (ETH)
 FUNDER_ACCOUNT_KEY = "master"       # key.json 中用于出资的主账户
 # --- 输出文件 ---
 KEY_OUTPUT_FILE = os.path.join(DATA_DIR, "verifiers_key.json")
+HOLDERS_KEY_OUTPUT_FILE = os.path.join(DATA_DIR, "holders_key.json")
 CSV_REPORT_FILE = os.path.join(DATA_DIR, "setup_verifiers.csv")
 # --- 成本估算常量 ---
 FIXED_MAINNET_GAS_GWEI = 4.88       # 年度均值 Gwei
@@ -43,7 +45,7 @@ node_url = config.get("api_url", "https://ethereum-sepolia.publicnode.com")
 w3 = Web3(Web3.HTTPProvider(node_url))
 
 
-def generate_accounts(num):
+def generate_accounts(num, role_prefix="verifier"):
     """生成指定数量的密钥对 (Admin + Op)"""
     print(f"\n[Step 1] 正在生成 {num} 组 Verifier 账户...")
     verifiers = []
@@ -54,7 +56,7 @@ def generate_accounts(num):
         
         verifiers.append({
             "id": i, 
-            "name": f"verifier_{i}",
+            "name": f"{role_prefix}_{i}",
             "admin": {"address": admin_acct.address, "private_key": admin_acct.key.hex()},
             "op": {"address": op_acct.address, "private_key": op_acct.key.hex()}
         })
@@ -276,12 +278,12 @@ def generate_report(reg_results, del_results):
     print(f"{'Avg. Est. Cost (USD)':<25} | ${avg_reg_cost:<24.4f} | ${avg_del_cost:.4f}")
     print("="*80)
 
-def save_keys_to_file(verifiers):
+def save_keys_to_file(accounts_list, role_prefix="verifier", output_file=KEY_OUTPUT_FILE):
     """
     保存密钥信息到文件，格式完全兼容 key.json 的结构
     (包含 api_url, qwq_api_key, accounts)
     """
-    print(f"\n[Step 6] 保存账户密钥到 {KEY_OUTPUT_FILE} ...")
+    print(f"\n[Step 6] 保存账户密钥到 {output_file} ...")
     
     # 1. 继承原有的全局配置
     output_data = {
@@ -291,9 +293,9 @@ def save_keys_to_file(verifiers):
     }
 
     # 2. 将 verifiers 列表展平为 accounts 字典
-    for v in verifiers:
+    for v in accounts_list:
         # e.g. verifier_1
-        base_name = f"verifier_{v['id']}"
+        base_name = f"{role_prefix}_{v['id']}"
         
         # 添加 Admin 账户
         # key: verifier_1_admin
@@ -310,7 +312,7 @@ def save_keys_to_file(verifiers):
         }
 
     # 3. 写入文件
-    with open(KEY_OUTPUT_FILE, "w", encoding='utf-8') as f:
+    with open(output_file, "w", encoding='utf-8') as f:
         json.dump(output_data, f, indent=4, ensure_ascii=False)
     print(f"    保存成功！文件格式已适配 key.json 标准。")
 
@@ -321,7 +323,7 @@ def main():
         return
     
     try:
-        verifiers = generate_accounts(NUM_VERIFIERS)
+        verifiers = generate_accounts(NUM_VERIFIERS, role_prefix="verifier")
         fund_accounts(verifiers, funder_info)
         time.sleep(3)
         
@@ -332,7 +334,15 @@ def main():
         generate_report(registration_results, delegation_results)
 
         # 保存格式化后的密钥
-        save_keys_to_file(verifiers)
+        save_keys_to_file(verifiers, role_prefix="verifier", output_file=KEY_OUTPUT_FILE)
+
+        holders = generate_accounts(NUM_HOLDERS, role_prefix="holder")
+        fund_accounts(holders, funder_info)
+        time.sleep(3)
+        register_dids_and_measure(holders)
+        time.sleep(3)
+        add_delegates_and_measure(holders)
+        save_keys_to_file(holders, role_prefix="holder", output_file=HOLDERS_KEY_OUTPUT_FILE)
         
         print("\n=== 所有操作执行完毕 ===")
         
@@ -340,7 +350,9 @@ def main():
         print(f"\n[Error] 脚本执行过程中发生错误: {e}")
         if 'verifiers' in locals():
             print("尝试保存已生成的账户信息...")
-            save_keys_to_file(verifiers)
+            save_keys_to_file(verifiers, role_prefix="verifier", output_file=KEY_OUTPUT_FILE)
+        if 'holders' in locals():
+            save_keys_to_file(holders, role_prefix="holder", output_file=HOLDERS_KEY_OUTPUT_FILE)
 
 if __name__ == "__main__":
     main()

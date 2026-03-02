@@ -171,14 +171,12 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
     // ----------------------------
 
     /**
-     * @dev S_init = SCORE_BASE + FACTOR * ln(1 + STAKE_MULTIPLIER * stake)
+     * @dev S_init = SCORE_BASE + floor(FACTOR * ln(1 + STAKE_MULTIPLIER * stake))
      *
      * - stake 以 wei 表示，本身就是 1e18 精度
      * - 1 在 UD60x18 中表示为 1e18
      * - ln 输入必须 > 0；这里至少为 1e18
-     *
-     *最少约 0.00133 ETH（≈ 1.33 mETH）才能让 S_init 从 60 变成 61
-     * 返回值为“整数分数”，因此最后除以 1e18 抹掉小数部分。
+     * - FACTOR 和 lnWad 都是 1e18 精度，先得到 WAD，再转整数分
      */
     function _calculateInitScore(
         uint256 _stakeWei
@@ -192,7 +190,9 @@ contract AgentRegistry_v1 is AccessControl, ReentrancyGuard {
         // ln(x) >= 0，这里可以安全转回 uint
         uint256 lnXUint = uint256(lnX);
 
-        uint256 additionalScore = (FACTOR * lnXUint) / 1e18;
+        // FACTOR(1e18) * lnX(1e18) => 1e36，先缩放回 WAD，再转整数分
+        uint256 additionalScoreWad = (FACTOR * lnXUint) / 1e18;
+        uint256 additionalScore = additionalScoreWad / 1e18;
 
         if (SCORE_MAX >= SCORE_BASE + additionalScore) {
             return SCORE_BASE + additionalScore;

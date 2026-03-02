@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dagg.local/schemas/vp-format.schema.json",
   "title": "Agent VP Format",
-  "description": "用于握手阶段的 VP 格式。兼容当前 infrastructure/validator.py。",
+  "description": "VP format compatible with infrastructure/wallet.py and infrastructure/validator.py.",
   "type": "object",
   "required": [
     "@context",
@@ -32,12 +32,26 @@
       }
     },
     "holder": {
-      "type": "string",
-      "description": "Holder DID（当前验证器以此做验签/一致性校验）。"
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
     },
     "holderBinding": {
       "type": "object",
-      "description": "扩展字段：用于 Admin/OP 分离追责。",
       "properties": {
         "agentDid": {
           "type": "string"
@@ -52,17 +66,13 @@
           "type": "string"
         }
       },
-      "required": [
-        "agentDid"
-      ],
       "additionalProperties": true
     },
     "verifiableCredential": {
       "type": "array",
       "items": {
         "type": "object"
-      },
-      "minItems": 1
+      }
     },
     "proof": {
       "type": "object",
@@ -76,24 +86,20 @@
       ],
       "properties": {
         "type": {
-          "type": "string",
-          "default": "EcdsaSecp256k1RecoverySignature2020"
+          "type": "string"
         },
         "created": {
           "type": "string",
           "format": "date-time"
         },
         "verificationMethod": {
-          "type": "string",
-          "description": "建议填 OP kid（例如 did:...#delegate-1）。"
+          "type": "string"
         },
         "proofPurpose": {
-          "type": "string",
-          "default": "authentication"
+          "type": "string"
         },
         "challenge": {
-          "type": "string",
-          "description": "握手 nonce。"
+          "type": "string"
         },
         "domain": {
           "type": "string"
@@ -106,7 +112,6 @@
     },
     "session": {
       "type": "object",
-      "description": "可选：会话审计字段。",
       "properties": {
         "requestId": {
           "type": "string"
@@ -124,4 +129,3 @@
   },
   "additionalProperties": true
 }
-

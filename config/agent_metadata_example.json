@@ -1,0 +1,75 @@
+{
+  "metadataVersion": "2.0.0",
+  "agentDid": "did:ethr:sepolia:0xe2e1620A139137F90236FF21630055760a3Bb5BE",
+  "adminAddress": "0xe2e1620A139137F90236FF21630055760a3Bb5BE",
+  "service": {
+    "name": "Forecast Agent",
+    "summary": "Financial time-series forecasting for crypto and stock markets.",
+    "domain": "finance",
+    "tags": [
+      "forecast",
+      "timeseries",
+      "risk"
+    ],
+    "interactionModes": [
+      "A2A_HTTP",
+      "JSON_RPC"
+    ],
+    "endpoints": [
+      {
+        "name": "primary-api",
+        "url": "https://agent.example.com/api/v1",
+        "protocol": "https",
+        "auth": "did-sig"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "cap.forecast.1",
+      "name": "Financial Forecasting",
+      "description": "Predicts 1h and 24h price ranges from historical market data.",
+      "inputs": [
+        "symbol",
+        "timeframe",
+        "historyWindow"
+      ],
+      "outputs": [
+        "predictedRange",
+        "confidence"
+      ],
+      "examples": [
+        "Predict BTC range for next 24h."
+      ]
+    }
+  ],
+  "vcManifest": {
+    "holderDid": "did:ethr:sepolia:0xe2e1620A139137F90236FF21630055760a3Bb5BE",
+    "types": [
+      "AgentIdentityCredential",
+      "AgentModelCredential",
+      "AgentCapabilityCredential",
+      "AgentToolsetCredential",
+      "AgentComplianceCredential"
+    ],
+    "lazyFetch": true,
+    "fullVcRefs": [
+      {
+        "type": "AgentIdentityCredential",
+        "cid": "bafkreieat5ffz2mllmoeolgmiy2qbi7m7tspw2smhqs3swcusx7jjsod7q"
+      }
+    ]
+  },
+  "indexHints": {
+    "vectorText": "Finance forecasting agent for BTC and ETH time-series prediction.",
+    "searchableKeywords": [
+      "finance forecasting",
+      "time-series",
+      "risk control"
+    ]
+  },
+  "timestamps": {
+    "createdAt": "2026-03-01T10:00:00Z",
+    "updatedAt": "2026-03-01T10:00:00Z"
+  }
+}

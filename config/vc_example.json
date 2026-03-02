@@ -1,0 +1,28 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/credentials/v2",
+    "https://schema.org"
+  ],
+  "type": [
+    "VerifiableCredential",
+    "AgentIdentityCredential"
+  ],
+  "issuer": "did:ethr:sepolia:0xe2e1620A139137F90236FF21630055760a3Bb5BE",
+  "validFrom": "2026-03-01T10:00:00Z",
+  "validUntil": "2027-03-01T10:00:00Z",
+  "credentialSubject": {
+    "id": "did:ethr:sepolia:0xe2e1620A139137F90236FF21630055760a3Bb5BE",
+    "agentDid": "did:ethr:sepolia:0xe2e1620A139137F90236FF21630055760a3Bb5BE",
+    "claimsVersion": "1.0.0",
+    "agent_name": "Forecast Agent",
+    "developer_did": "did:ethr:sepolia:0xb4a5A6225fd5ac6c7cEA9f1B14916cCa51292dB4",
+    "integrityCheck": "passed"
+  },
+  "proof": {
+    "type": "EcdsaSecp256k1Signature2019",
+    "created": "2026-03-01T10:00:00Z",
+    "verificationMethod": "did:ethr:sepolia:0xb4a5A6225fd5ac6c7cEA9f1B14916cCa51292dB4",
+    "proofPurpose": "assertionMethod",
+    "jws": "0xissuer-signature"
+  }
+}

@@ -2,15 +2,30 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dagg.local/schemas/vc-format.schema.json",
   "title": "Agent VC Format",
-  "description": "通用 VC 外层格式。具体 claims 由 vc_schemas/vc1~vc5 约束。",
+  "description": "Lightweight VC envelope compatible with existing vc_schemas and runtime validator.",
   "type": "object",
   "required": [
     "@context",
     "type",
     "issuer",
-    "issuanceDate",
     "credentialSubject",
     "proof"
+  ],
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "required": [
+            "issuanceDate"
+          ]
+        },
+        {
+          "required": [
+            "validFrom"
+          ]
+        }
+      ]
+    }
   ],
   "properties": {
     "@context": {
@@ -21,8 +36,7 @@
       "minItems": 1
     },
     "id": {
-      "type": "string",
-      "description": "可选 VC 唯一 ID，如 urn:uuid:* 或 URL。"
+      "type": "string"
     },
     "type": {
       "type": "array",
@@ -34,8 +48,7 @@
       }
     },
     "issuer": {
-      "type": "string",
-      "description": "Issuer DID，例如 did:ethr:sepolia:0x..."
+      "type": "string"
     },
     "issuanceDate": {
       "type": "string",
@@ -56,12 +69,10 @@
       ],
       "properties": {
         "id": {
-          "type": "string",
-          "description": "Holder DID。需与 VP holder 一致。"
+          "type": "string"
         },
         "agentDid": {
-          "type": "string",
-          "description": "可选。冗余存储 Agent DID 便于跨模块追责。"
+          "type": "string"
         },
         "claimsVersion": {
           "type": "string",
@@ -71,12 +82,10 @@
       "additionalProperties": true
     },
     "credentialStatus": {
-      "type": "object",
-      "description": "可选吊销状态对象。"
+      "type": "object"
     },
     "evidence": {
       "type": "array",
-      "description": "可选证据列表（benchmark、审计报告、PoM 等）。",
       "items": {
         "type": "object",
         "properties": {
@@ -110,8 +119,7 @@
       ],
       "properties": {
         "type": {
-          "type": "string",
-          "default": "EcdsaSecp256k1RecoverySignature2020"
+          "type": "string"
         },
         "created": {
           "type": "string",
@@ -132,4 +140,3 @@
   },
   "additionalProperties": true
 }
-
