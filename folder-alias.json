@@ -67,5 +67,41 @@
     },
     "config/metadata_vectorize_fields.json": {
         "description": "Sidecar 向量化与检索策略配置"
+    },
+    "sidecar/storage/sqlite_state.py": {
+        "description": "把agent状态同步进SQLite"
+    },
+    "sidecar/adapters/subgraph_client.py": {
+        "description": "向子图拉agent数据"
+    },
+    "sidecar/services/sync_orchestrator.py": {
+        "description": "同步流程总指挥"
+    },
+    "sidecar/wiring.py": {
+        "description": "配置 SQLite仓库 同步器 三者组装"
+    },
+    "sidecar/main.py": {
+        "description": "启动入口"
+    },
+    "sidecar/adapters": {
+        "description": "接口层"
+    },
+    "sidecar/storage": {
+        "description": "本地存储层"
+    },
+    "sidecar/services": {
+        "description": "业务编排层 串联起接口和存储"
+    },
+    "sidecar/domain": {
+        "description": "算法层 评分、过滤、排序、数据结构定义"
+    },
+    "sidecar/api": {
+        "description": "对外 HTTP 接口层"
+    },
+    "sidecar/tests": {
+        "description": "测试代码"
+    },
+    "sidecar/jobs": {
+        "description": "定时任务/调度层"
     }
 }
