@@ -49,6 +49,14 @@ MAX_VECTOR_TEXT_CHARS = 800
 class SyncResult:
     """
     单轮同步结果。
+
+    字段说明：
+    - from_block: 本轮拉取起始区块。
+    - to_block: 本轮处理后推进到的区块。
+    - fetched_count: 子图拉取记录数。
+    - written_count: 本地写库记录数。
+    - rescored_count: 本轮重算评分记录数。
+    - reached_page_limit: 是否触发分页上限（可能仍有剩余数据）。
     """
 
     from_block: int
@@ -62,6 +70,12 @@ class SyncResult:
 class SyncOrchestrator:
     """
     增量同步编排器。
+
+    核心职责：
+    - 增量拉取子图数据并落库；
+    - 计算并维护评分字段；
+    - 协同维护 Chroma 向量索引；
+    - 提供本地评分调整与全量重算入口。
     """
 
     def __init__(
@@ -76,6 +90,10 @@ class SyncOrchestrator:
         参数：
         - state_store: SQLite 状态仓储实例。
         - default_start_block: 未找到水位线时的默认起始区块。
+        - vector_index: 向量索引实例；为空时跳过向量同步。
+
+        返回：
+        - None: 完成依赖注入与初始化。
         """
         self.state_store = state_store
         self.default_start_block = default_start_block
@@ -226,15 +244,31 @@ class SyncOrchestrator:
 
     def _sync_vector_index(self, current: AgentState, previous: AgentState | None) -> None:
         """
-        仅在 metadata CID 变化时同步更新 Chroma 索引。
+        同步 Chroma 索引：
+        1. metadata CID 变化时更新；
+        2. 注册/罚没状态变化导致可见性变化时，强制删除或重建。
         """
         if self.vector_index is None:
             return
 
         current_cid = current.metadata_cid.strip()
         previous_cid = previous.metadata_cid.strip() if previous is not None else ""
-        cid_changed = (previous is None) or (current_cid != previous_cid)
-        if not cid_changed:
+        cid_changed = (previous is None) or (current_cid != previous_cid)#新加入或者cid改变
+        current_should_index = (
+            bool(current_cid)
+            and bool(current.vector_text.strip())
+            and current.is_registered
+            and (not current.is_slashed)
+        )#现状态是否应该被记录
+        previous_should_index = (
+            previous is not None
+            and bool(previous.metadata_cid.strip())
+            and bool(previous.vector_text.strip())
+            and previous.is_registered
+            and (not previous.is_slashed)
+        )#先前状态是否应该被记录
+        visibility_changed = bool(current_should_index) != bool(previous_should_index)#可见性未改变
+        if (not cid_changed) and (not visibility_changed):#cid没变且没变罚没或注销
             return
 
         # metadata 软失败时会复用旧值，此时跳过向量更新，避免脏索引。
@@ -243,6 +277,7 @@ class SyncOrchestrator:
             and current_cid != previous_cid
             and current.metadata_sha256 == previous.metadata_sha256
             and current.vector_text == previous.vector_text
+            and current_should_index
         ):
             LOGGER.warning(
                 "skip chroma sync because metadata refresh failed: agent=%s cid=%s",
@@ -257,7 +292,7 @@ class SyncOrchestrator:
                 or (not current.vector_text.strip())
                 or (not current.is_registered)
                 or current.is_slashed
-            ):
+            ):#罚死或者注销了
                 self.vector_index.delete(current.agent_address)
                 return
 
@@ -277,6 +312,55 @@ class SyncOrchestrator:
                 current_cid,
                 exc,
             )
+
+    def adjust_local_score(
+        self,
+        agent_address: str,
+        alpha_delta: float = 0.0,
+        beta_delta: float = 0.0,
+    ) -> AgentState:
+        """
+        手动增减本地评分证据（alpha/beta），并立即重算评分。
+        参数：
+        - agent_address: 目标 Agent 地址。
+        - alpha_delta: 正向证据增量（可为负）。
+        - beta_delta: 负向证据增量（可为负）。
+        返回：
+        - AgentState: 更新后的状态对象。
+        """
+        key = agent_address.lower().strip()
+        if not key:
+            raise ValueError("agent_address 不能为空")
+        if alpha_delta == 0.0 and beta_delta == 0.0:
+            raise ValueError("alpha_delta 和 beta_delta 不能同时为 0")
+
+        state = self.state_store.get_agent_state(key)
+        if state is None:
+            raise ValueError(f"agent 不存在: {key}")
+
+        # 手动调分接口只调整证据，不附带时间恢复/衰减增量，避免结果不可预期。
+        now_ts = _now_ts()
+        state.last_score_update_ts = now_ts
+        state.alpha = max(MIN_EVIDENCE, float(state.alpha) + float(alpha_delta))
+        state.beta = max(MIN_EVIDENCE, float(state.beta) + float(beta_delta))
+        self._compute_scores_inplace(state, now_ts)
+        self.state_store.upsert_agent_state(state)
+        return state
+
+    def adjust_local_evidence(
+        self,
+        agent_address: str,
+        alpha_delta: float = 0.0,
+        beta_delta: float = 0.0,
+    ) -> AgentState:
+        """
+        兼容旧名称：转发到 adjust_local_score。
+        """
+        return self.adjust_local_score(
+            agent_address=agent_address,
+            alpha_delta=alpha_delta,
+            beta_delta=beta_delta,
+        )
 
     def rescore_all(self, batch_size: int = 500) -> int:
         """
@@ -358,16 +442,22 @@ class SyncOrchestrator:
             state.local_score = previous.local_score
             state.confidence_score = previous.confidence_score
             state.final_score = previous.final_score
+            state.runtime_probe_url = previous.runtime_probe_url
+            state.last_probe_ts = previous.last_probe_ts
+            state.last_probe_success_ts = previous.last_probe_success_ts
+            state.consecutive_probe_failures = previous.consecutive_probe_failures
 
         cid = state.metadata_cid.strip()
         if not cid:
             state.metadata_sha256 = ""
             state.vector_text = ""
+            state.runtime_probe_url = ""
             return state
 
         if previous is not None and previous.metadata_cid.strip() == cid:
             state.metadata_sha256 = previous.metadata_sha256
             state.vector_text = previous.vector_text
+            state.runtime_probe_url = previous.runtime_probe_url
             return state
 
         metadata_result = self._load_metadata(cid, expected_did=state.did)
@@ -383,6 +473,7 @@ class SyncOrchestrator:
 
         state.metadata_sha256 = metadata_result["sha256"]
         state.vector_text = metadata_result["vector_text"]
+        state.runtime_probe_url = metadata_result["probe_url"]
         return state
 
     def _compute_scores_inplace(self, state: AgentState, now_ts: int) -> None:
@@ -461,6 +552,15 @@ class SyncOrchestrator:
     def _load_metadata(self, cid: str, expected_did: str = "") -> dict[str, str] | None:
         """
         拉取并解析 metadata，失败时返回 None，不中断主同步。
+
+        参数：
+        - cid: 目标 metadata 的 IPFS CID。
+        - expected_did: 期望 DID（来自子图），用于轻量一致性校验。
+
+        返回：
+        - dict[str, str] | None:
+          - 成功时返回 `sha256`、`vector_text`、`probe_url`；
+          - 失败时返回 None。
         """
         try:
             payload = fetch_and_verify(cid)
@@ -484,9 +584,11 @@ class SyncOrchestrator:
 
         sha256 = str(payload.get("sha256", "") or "")
         vector_text = self._build_vector_text(metadata)
+        probe_url = self._extract_probe_url(metadata)
         return {
             "sha256": sha256,
             "vector_text": vector_text,
+            "probe_url": probe_url,
         }
 
     @staticmethod
@@ -535,6 +637,31 @@ class SyncOrchestrator:
 
         compact = [p for p in parts if p]
         return "\n".join(compact)[:MAX_VECTOR_TEXT_CHARS]
+
+    @staticmethod
+    def _extract_probe_url(metadata: dict[str, Any]) -> str:
+        """
+        从 metadata 提取运行时探测地址（可选字段）。
+
+        参数：
+        - metadata: 已通过模板校验的 metadata 字典。
+
+        返回：
+        - str: 探测地址；未命中时返回空字符串。
+
+        说明：
+        - 依次尝试 `service.endpoint`、`service.probeUrl`、
+          `service.healthUrl`、`service.url`。
+        """
+        service = metadata.get("service")
+        if not isinstance(service, dict):
+            return ""
+
+        for key in ("endpoint", "probeUrl", "healthUrl", "url"):
+            value = service.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
 
 def _to_int(value: Any, default: int = 0) -> int:

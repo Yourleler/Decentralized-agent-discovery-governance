@@ -40,6 +40,10 @@ class AgentState:
     - alpha/beta/last_score_update_ts: 链下信誉证据与上次结算时间。
     - global_score/local_score/confidence_score/final_score: 评分结果字段。
     - metadata_sha256/vector_text: CID 对应元数据摘要与向量化文本。
+    - runtime_probe_url: 运行时探测地址（从 metadata 提取）。
+    - last_probe_ts/last_probe_success_ts: 最近探测时间与最近成功时间。
+    - consecutive_probe_failures: 连续探测失败次数（用于冷却过滤）。
+    - updated_at: 本地记录更新时间戳（秒）。
     """
 
     agent_address: str
@@ -62,6 +66,10 @@ class AgentState:
     final_score: float = 0.0
     metadata_sha256: str = ""
     vector_text: str = ""
+    runtime_probe_url: str = ""
+    last_probe_ts: int = 0
+    last_probe_success_ts: int = 0
+    consecutive_probe_failures: int = 0
     updated_at: int = 0
 
     def to_db_params(self) -> dict[str, Any]:
@@ -88,6 +96,10 @@ class AgentState:
         data["final_score"] = float(self.final_score)
         data["metadata_sha256"] = self.metadata_sha256.strip().lower()
         data["vector_text"] = self.vector_text.strip()
+        data["runtime_probe_url"] = self.runtime_probe_url.strip()
+        data["last_probe_ts"] = int(self.last_probe_ts)
+        data["last_probe_success_ts"] = int(self.last_probe_success_ts)
+        data["consecutive_probe_failures"] = int(self.consecutive_probe_failures)
         data["updated_at"] = self.updated_at or _now_ts()
         return data
 
@@ -95,6 +107,9 @@ class AgentState:
 class SQLiteStateStore:
     """
     SQLite 状态仓储。
+
+    构造参数：
+    - db_path: SQLite 文件路径（支持 `:memory:`）。
     """
 
     WATERMARK_KEY = "last_synced_block"
@@ -143,6 +158,10 @@ class SQLiteStateStore:
             final_score REAL NOT NULL DEFAULT 0,
             metadata_sha256 TEXT NOT NULL DEFAULT '',
             vector_text TEXT NOT NULL DEFAULT '',
+            runtime_probe_url TEXT NOT NULL DEFAULT '',
+            last_probe_ts INTEGER NOT NULL DEFAULT 0,
+            last_probe_success_ts INTEGER NOT NULL DEFAULT 0,
+            consecutive_probe_failures INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL
         );
         """
@@ -183,6 +202,10 @@ class SQLiteStateStore:
             self._ensure_column_exists("agent_state", "final_score", "REAL NOT NULL DEFAULT 0")
             self._ensure_column_exists("agent_state", "metadata_sha256", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column_exists("agent_state", "vector_text", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column_exists("agent_state", "runtime_probe_url", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column_exists("agent_state", "last_probe_ts", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column_exists("agent_state", "last_probe_success_ts", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column_exists("agent_state", "consecutive_probe_failures", "INTEGER NOT NULL DEFAULT 0")
 
             # 索引放在补列之后，兼容老库迁移场景。
             self._conn.execute(ddl_index_registered)
@@ -214,13 +237,15 @@ class SQLiteStateStore:
             last_misconduct_timestamp, stake_amount, is_slashed, is_registered,
             admin, last_event_block, alpha, beta, last_score_update_ts,
             global_score, local_score, confidence_score, final_score,
-            metadata_sha256, vector_text, updated_at
+            metadata_sha256, vector_text, runtime_probe_url, last_probe_ts,
+            last_probe_success_ts, consecutive_probe_failures, updated_at
         ) VALUES (
             :agent_address, :did, :metadata_cid, :init_score, :accumulated_penalty,
             :last_misconduct_timestamp, :stake_amount, :is_slashed, :is_registered,
             :admin, :last_event_block, :alpha, :beta, :last_score_update_ts,
             :global_score, :local_score, :confidence_score, :final_score,
-            :metadata_sha256, :vector_text, :updated_at
+            :metadata_sha256, :vector_text, :runtime_probe_url, :last_probe_ts,
+            :last_probe_success_ts, :consecutive_probe_failures, :updated_at
         )
         ON CONFLICT(agent_address) DO UPDATE SET
             did = excluded.did,
@@ -242,11 +267,60 @@ class SQLiteStateStore:
             final_score = excluded.final_score,
             metadata_sha256 = excluded.metadata_sha256,
             vector_text = excluded.vector_text,
+            runtime_probe_url = excluded.runtime_probe_url,
+            last_probe_ts = excluded.last_probe_ts,
+            last_probe_success_ts = excluded.last_probe_success_ts,
+            consecutive_probe_failures = excluded.consecutive_probe_failures,
             updated_at = excluded.updated_at
         WHERE excluded.last_event_block >= agent_state.last_event_block;
         """
         with self._lock, self._conn:
             self._conn.execute(sql, params)
+
+    def update_runtime_probe(self, agent_address: str, success: bool, probe_ts: int | None = None) -> None:
+        """
+        更新运行时探测结果（用于发现阶段可用性过滤）。
+
+        参数：
+        - agent_address: 目标 Agent 地址（会被规范化为小写后写库）。
+        - success: 本次探测是否成功。
+          - True: 记录最近成功时间并将连续失败次数清零。
+          - False: 仅记录探测时间并将连续失败次数 +1。
+        - probe_ts: 探测时间戳（秒）；为空时使用当前时间。
+
+        返回：
+        - None: 仅执行数据库更新，不返回业务数据。
+        """
+        key = agent_address.lower().strip()
+        if not key:
+            return
+        ts = int(probe_ts or _now_ts())
+        with self._lock, self._conn:
+            if success:
+                self._conn.execute(
+                    """
+                    UPDATE agent_state
+                    SET
+                        last_probe_ts = ?,
+                        last_probe_success_ts = ?,
+                        consecutive_probe_failures = 0,
+                        updated_at = ?
+                    WHERE agent_address = ?
+                    """,
+                    (ts, ts, ts, key),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    UPDATE agent_state
+                    SET
+                        last_probe_ts = ?,
+                        consecutive_probe_failures = consecutive_probe_failures + 1,
+                        updated_at = ?
+                    WHERE agent_address = ?
+                    """,
+                    (ts, ts, key),
+                )
 
     def get_agent_state(self, agent_address: str) -> AgentState | None:
         """
@@ -467,6 +541,22 @@ class SQLiteStateStore:
         if "vector_text" in keys and row["vector_text"] is not None:
             vector_text = str(row["vector_text"])
 
+        runtime_probe_url = ""
+        if "runtime_probe_url" in keys and row["runtime_probe_url"] is not None:
+            runtime_probe_url = str(row["runtime_probe_url"])
+
+        last_probe_ts = 0
+        if "last_probe_ts" in keys and row["last_probe_ts"] is not None:
+            last_probe_ts = int(row["last_probe_ts"])
+
+        last_probe_success_ts = 0
+        if "last_probe_success_ts" in keys and row["last_probe_success_ts"] is not None:
+            last_probe_success_ts = int(row["last_probe_success_ts"])
+
+        consecutive_probe_failures = 0
+        if "consecutive_probe_failures" in keys and row["consecutive_probe_failures"] is not None:
+            consecutive_probe_failures = int(row["consecutive_probe_failures"])
+
         return AgentState(
             agent_address=str(row["agent_address"]),
             did=str(row["did"]),
@@ -488,5 +578,9 @@ class SQLiteStateStore:
             final_score=final_score,
             metadata_sha256=metadata_sha256,
             vector_text=vector_text,
+            runtime_probe_url=runtime_probe_url,
+            last_probe_ts=last_probe_ts,
+            last_probe_success_ts=last_probe_success_ts,
+            consecutive_probe_failures=consecutive_probe_failures,
             updated_at=int(row["updated_at"]),
         )

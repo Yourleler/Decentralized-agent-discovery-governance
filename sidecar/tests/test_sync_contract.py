@@ -237,6 +237,7 @@ class TestSyncContract(unittest.TestCase):
             orchestrator._load_metadata = lambda cid, expected_did="": {  # type: ignore[method-assign]
                 "sha256": f"sha-{cid}",
                 "vector_text": f"text-{cid}",
+                "probe_url": "",
             }
 
             state_v1 = AgentState(
@@ -272,6 +273,119 @@ class TestSyncContract(unittest.TestCase):
             orchestrator._persist_states([state_new_cid])
             self.assertEqual(len(vector_index.upserts), 2)
             self.assertEqual(vector_index.upserts[-1]["metadata"]["metadata_cid"], "cid-2")
+        finally:
+            store.close()
+
+    def test_metadata_probe_url_persisted_for_runtime_probe(self) -> None:
+        """
+        metadata 中的探测地址应被持久化，用于发现阶段运行时探测。
+        """
+        store = SQLiteStateStore(":memory:")
+        vector_index = _FakeVectorIndex()
+        try:
+            store.init_db()
+            orchestrator = SyncOrchestrator(state_store=store, vector_index=vector_index)
+            orchestrator._load_metadata = lambda cid, expected_did="": {  # type: ignore[method-assign]
+                "sha256": f"sha-{cid}",
+                "vector_text": f"text-{cid}",
+                "probe_url": "http://agent.local/health",
+            }
+
+            state = AgentState(
+                agent_address="0x44",
+                did="did:demo",
+                metadata_cid="cid-1",
+                is_registered=True,
+                is_slashed=False,
+                last_event_block=1,
+            )
+            orchestrator._persist_states([state])
+            got = store.get_agent_state("0x44")
+            self.assertIsNotNone(got)
+            assert got is not None
+            self.assertEqual(got.runtime_probe_url, "http://agent.local/health")
+        finally:
+            store.close()
+
+    def test_chroma_sync_deletes_when_slashed_even_if_cid_unchanged(self) -> None:
+        """
+        可见性变化契约：
+        - 当 Agent 从可用变为 slashed，且 CID 不变时，仍应删除 Chroma 文档。
+        """
+        store = SQLiteStateStore(":memory:")
+        vector_index = _FakeVectorIndex()
+        try:
+            store.init_db()
+            orchestrator = SyncOrchestrator(state_store=store, vector_index=vector_index)
+            orchestrator._load_metadata = lambda cid, expected_did="": {  # type: ignore[method-assign]
+                "sha256": f"sha-{cid}",
+                "vector_text": f"text-{cid}",
+                "probe_url": "",
+            }
+
+            active = AgentState(
+                agent_address="0x22",
+                did="did:demo",
+                metadata_cid="cid-1",
+                is_registered=True,
+                is_slashed=False,
+                last_event_block=1,
+            )
+            orchestrator._persist_states([active])
+            self.assertEqual(len(vector_index.upserts), 1)
+
+            slashed = AgentState(
+                agent_address="0x22",
+                did="did:demo",
+                metadata_cid="cid-1",
+                is_registered=True,
+                is_slashed=True,
+                last_event_block=2,
+            )
+            orchestrator._persist_states([slashed])
+            self.assertIn("0x22", vector_index.deletes)
+            self.assertEqual(len(vector_index.upserts), 1)
+        finally:
+            store.close()
+
+    def test_adjust_local_evidence_updates_alpha_beta_and_scores(self) -> None:
+        """
+        本地评分接口契约：
+        - 可手动增减 alpha/beta；
+        - 调整后会立即重算并落库评分字段。
+        """
+        store = SQLiteStateStore(":memory:")
+        try:
+            store.init_db()
+            state = AgentState(
+                agent_address="0x33",
+                init_score=80,
+                accumulated_penalty=10,
+                is_registered=True,
+                is_slashed=False,
+                alpha=1.0,
+                beta=1.0,
+                last_event_block=1,
+            )
+            store.upsert_agent_state(state)
+
+            orchestrator = SyncOrchestrator(state_store=store)
+            updated = orchestrator.adjust_local_evidence(
+                agent_address="0x33",
+                alpha_delta=1.5,
+                beta_delta=-0.5,
+            )
+
+            self.assertAlmostEqual(updated.alpha, 2.5, places=6)
+            self.assertAlmostEqual(updated.beta, 0.5, places=6)
+            self.assertGreater(updated.last_score_update_ts, 0)
+            self.assertGreater(updated.final_score, 0.0)
+
+            persisted = store.get_agent_state("0x33")
+            self.assertIsNotNone(persisted)
+            assert persisted is not None
+            self.assertAlmostEqual(persisted.alpha, 2.5, places=6)
+            self.assertAlmostEqual(persisted.beta, 0.5, places=6)
         finally:
             store.close()
 

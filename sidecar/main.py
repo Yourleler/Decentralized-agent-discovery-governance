@@ -76,6 +76,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=5,
         help="语义检索返回数量",
     )
+    parser.add_argument(
+        "--adjust-local-score",
+        dest="adjust_local_score",
+        action="store_true",
+        help="手动增减本地评分证据（alpha/beta）",
+    )
+    parser.add_argument(
+        "--agent-address",
+        dest="agent_address",
+        default=None,
+        help="本地评分调整目标 agent 地址",
+    )
+    parser.add_argument(
+        "--alpha-delta",
+        dest="alpha_delta",
+        type=float,
+        default=0.0,
+        help="本地正向证据增量（可为负）",
+    )
+    parser.add_argument(
+        "--beta-delta",
+        dest="beta_delta",
+        type=float,
+        default=0.0,
+        help="本地负向证据增量（可为负）",
+    )
     return parser.parse_args(argv)
 
 
@@ -169,6 +195,36 @@ def run_query(settings: SidecarSettings, query: str, top_k: int = 5) -> int:
         close_sidecar_container(container)
 
 
+def run_adjust_local_score(
+    settings: SidecarSettings,
+    agent_address: str,
+    alpha_delta: float = 0.0,
+    beta_delta: float = 0.0,
+) -> int:
+    """执行本地评分证据调整接口（CLI 形态）。"""
+    container = build_sidecar_container(settings)
+    try:
+        updated = container.sync_orchestrator.adjust_local_score(
+            agent_address=agent_address,
+            alpha_delta=alpha_delta,
+            beta_delta=beta_delta,
+        )
+        payload = {
+            "agent_address": updated.agent_address,
+            "alpha": updated.alpha,
+            "beta": updated.beta,
+            "global_score": updated.global_score,
+            "local_score": updated.local_score,
+            "confidence_score": updated.confidence_score,
+            "final_score": updated.final_score,
+            "last_score_update_ts": updated.last_score_update_ts,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    finally:
+        close_sidecar_container(container)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Sidecar 主函数。"""
     log_dir = Path(__file__).resolve().parent / "logs"
@@ -189,6 +245,15 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parse_args(argv)
     settings = build_settings_from_args(args)
+    if args.adjust_local_score:
+        if not args.agent_address:
+            raise ValueError("启用 --adjust-local-score 时必须提供 --agent-address")
+        return run_adjust_local_score(
+            settings=settings,
+            agent_address=args.agent_address,
+            alpha_delta=args.alpha_delta,
+            beta_delta=args.beta_delta,
+        )
     if args.query:
         return run_query(settings=settings, query=args.query, top_k=args.top_k)
 

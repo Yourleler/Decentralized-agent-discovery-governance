@@ -16,7 +16,19 @@ from sidecar.vector import ChromaIndex, ChromaIndexSettings, build_sentence_tran
 
 @dataclass
 class SidecarSettings:
-    """Sidecar 运行配置。"""
+    """
+    Sidecar 运行配置。
+
+    字段说明：
+    - db_path: SQLite 数据库路径。
+    - default_start_block: 首次启动（无水位线）时的起始区块。
+    - sync_first: 子图单页拉取条数。
+    - sync_max_pages: 单轮同步最大分页数。
+    - sync_max_rounds: 一次运行内最多同步轮数。
+    - chroma_persist_path: Chroma 持久化目录。
+    - chroma_collection_name: Chroma 集合名。
+    - embed_model_name: Embedding 模型名称（默认 bge-m3）。
+    """
 
     db_path: str
     default_start_block: int
@@ -30,7 +42,16 @@ class SidecarSettings:
 
 @dataclass
 class SidecarContainer:
-    """Sidecar 依赖容器。"""
+    """
+    Sidecar 依赖容器。
+
+    字段说明：
+    - settings: 运行配置。
+    - state_store: SQLite 状态仓储。
+    - chroma_index: 向量索引实例。
+    - sync_orchestrator: 同步编排器。
+    - discovery_service: 检索服务。
+    """
 
     settings: SidecarSettings
     state_store: SQLiteStateStore
@@ -141,6 +162,9 @@ def build_sidecar_container(settings: SidecarSettings | None = None) -> SidecarC
     discovery_service = DiscoveryService(
         state_store=state_store,
         vector_index=chroma_index,
+        trust_scale=12.0,
+        trust_boost_base=0.85,
+        trust_boost_gain=0.30,
     )
 
     return SidecarContainer(

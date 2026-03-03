@@ -19,4 +19,4 @@ def build_sentence_transformer_embedding(model_name: str = "BAAI/bge-m3") -> Any
             "缺少 sentence-transformers 或 chromadb embedding 组件，请先安装依赖。"
         ) from exc#from exc 是“显式异常因果链”，用于包装异常同时保留原始错误来源
 
-    return SentenceTransformerEmbeddingFunction(model_name=model_name)
+    return SentenceTransformerEmbeddingFunction(model_name=model_name)#返回嵌入向量（embeddings）列表
