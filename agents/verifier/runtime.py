@@ -8,6 +8,7 @@ import re
 import datetime
 import hashlib
 import random
+import shutil
 
 # === 路径适配 ===
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -160,12 +161,30 @@ class VerifierRuntime:
 
     def _load_probe_config(self):
         """从磁盘读取题目模板和测试数据。如果文件不存在，自动创建默认的“哈希计算”题目"""
+        shared_data_dir = os.path.join(current_dir, "data")
+        shared_templates = os.path.join(shared_data_dir, "probe_templates.json")
+        shared_inputs = os.path.join(shared_data_dir, "probe_inputs.json")
+
         if not os.path.exists(self.probe_templates_file):
-            default_tpl = [{"template_id": "tpl_01", "template_str": "Calculate SHA256 of '{{input_text}}'."}]
-            with open(self.probe_templates_file, 'w', encoding='utf-8') as f: json.dump(default_tpl, f)
+            if os.path.exists(shared_templates):
+                shutil.copyfile(shared_templates, self.probe_templates_file)
+            else:
+                default_tpl = [
+                    {
+                        "template_id": "tpl_01",
+                        "template_str": "Calculate SHA256 of '{{input_text}}'.",
+                        "require_time": False,
+                    }
+                ]
+                with open(self.probe_templates_file, 'w', encoding='utf-8') as f:
+                    json.dump(default_tpl, f)
         if not os.path.exists(self.probe_inputs_file):
-            default_inp = [{"text": "Hello World", "category": "basic"}]
-            with open(self.probe_inputs_file, 'w', encoding='utf-8') as f: json.dump(default_inp, f)
+            if os.path.exists(shared_inputs):
+                shutil.copyfile(shared_inputs, self.probe_inputs_file)
+            else:
+                default_inp = [{"text": "Hello World", "category": "basic"}]
+                with open(self.probe_inputs_file, 'w', encoding='utf-8') as f:
+                    json.dump(default_inp, f)
 
         try:
             with open(self.probe_templates_file, 'r', encoding='utf-8') as f: tpls = json.load(f)
@@ -216,10 +235,18 @@ class VerifierRuntime:
         
         expected_hash = hashlib.sha256(input_text.encode('utf-8')).hexdigest()
         
-        # 返回 raw_input_text 用于 AI 审计
-        return payload, expected_hash, final_prompt, input_text, int(dynamic_timeout)
+        require_time_check = bool(template_data.get("require_time", False))
+        if not require_time_check:
+            time_hint_text = f"{raw_template} {' '.join(required_tools)}".lower()
+            require_time_check = any(
+                hint in time_hint_text
+                for hint in ["current utc", "current time", "timestamp", "current_date", "get_current_utc_date"]
+            )
 
-    def _verify_tool_outputs(self, response_text, expected_hash):
+        # 返回 raw_input_text 用于 AI 审计
+        return payload, expected_hash, final_prompt, input_text, int(dynamic_timeout), require_time_check
+
+    def _verify_tool_outputs(self, response_text, expected_hash, require_time_check=False):
         """
         判断哈希是否正确，再从模型输出中提取一个时间戳，验证它是否与当前真实时间接近（±120秒）
         """
@@ -233,23 +260,32 @@ class VerifierRuntime:
             passed = False
             details.append(f"Hash Mismatch (Exp: {expected_hash[:6]}...)")
             
-        # Time Check (120s tolerance)
-        match = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", response_text)
-        if match:
-            try:
-                dt_str = match.group(1)
-                dt = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=datetime.timezone.utc)
-                now = datetime.datetime.now(datetime.timezone.utc)
-                if abs((now - dt).total_seconds()) <= 120:
-                    details.append("Time Fresh")
-                else:
+        # Time Check (120s tolerance) - only when probe template requires it
+        if require_time_check:
+            match = re.search(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}Z?)", response_text)
+            if match:
+                try:
+                    dt_str = match.group(1)
+                    if "T" in dt_str:
+                        dt = datetime.datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    else:
+                        dt = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(
+                            tzinfo=datetime.timezone.utc
+                        )
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    if abs((now - dt).total_seconds()) <= 120:
+                        details.append("Time Fresh")
+                    else:
+                        passed = False
+                        details.append("Time Stale")
+                except Exception:
                     passed = False
-                    details.append("Time Stale")
-            except:
-                details.append("Time Parse Err")
+                    details.append("Time Parse Err")
+            else:
+                passed = False
+                details.append("No Time Found")
         else:
-            passed = False
-            details.append("No Time Found")
+            details.append("Time Check Skipped")
             
         return passed, "; ".join(details)
 
@@ -316,7 +352,7 @@ class VerifierRuntime:
 
     def execute_probe(self, holder_did):
         """执行探测任务"""
-        payload, expected_hash, _, raw_input_text, timeout_ms = self._construct_probe_payload()#final_prompt已经在payload里面了
+        payload, expected_hash, _, raw_input_text, timeout_ms, require_time_check = self._construct_probe_payload()#final_prompt已经在payload里面了        
         
         serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'))
         payload["verifier_signature"] = self.wallet.sign_message(serialized)
@@ -338,7 +374,7 @@ class VerifierRuntime:
 
             #下面这个是处理的现有的一种模板,可拓展
             # 1. 工具验证
-            passed, msg = self._verify_tool_outputs(result_text, expected_hash)
+            passed, msg = self._verify_tool_outputs(result_text, expected_hash, require_time_check=require_time_check)
             
             # 2. AI 审计,让judge_chain判断是否正确处理了工具调用
             if passed:

@@ -99,86 +99,77 @@ def save_vc_to_wallet(vc_data):
     """
     safe_did = wallet.did.replace(":", "_")
     vc_types = vc_data.get("type", ["UnknownCredential"])
-    #把 VC 的 type 字段规范化成一个稳定、可用的类型名,[-1]是约定最后放最具体的
+    # 把 VC 的 type 字段规范化成一个稳定、可用的类型名，[-1] 是约定最后放最具体的
     vc_type_name = vc_types[-1] if isinstance(vc_types, list) else str(vc_types)
     filename = f"vc_{safe_did}_{vc_type_name}.json"
     vc_file = os.path.join(DATA_DIR, filename)
     try:
         with open(vc_file, 'w', encoding='utf-8') as f:
             json.dump(vc_data, f, indent=2, ensure_ascii=False)
-        #print(f"[Wallet] VC Saved to: {vc_file}")
     except Exception as e:
         print(f"[Wallet] Failed to save VC: {e}")
 
+
 def has_local_vc():
-    """检查是否有本地 VC 文件"""
-    import glob
+    """检查本地是否已有可用 VC。"""
     if not wallet or not wallet.did:
         return False
-    safe_did = wallet.did.replace(":", "_")
-    pattern = os.path.join(DATA_DIR, f"vc_{safe_did}_*.json")
-    files = glob.glob(pattern)#用pattern匹配文件
-    return len(files) > 0#找不到返回空list
+    wallet.load_local_vcs(DATA_DIR)
+    return len(wallet.my_vcs) > 0
+
 
 def execute_request_vc(issuer_url, credential_type):
     """
-    一个 DID 持有者，用带 nonce 的签名请求 Issuer 颁发 VC，并安全接收和存储它
+    DID 持有者用带 nonce 的签名请求 Issuer 颁发 VC，并安全接收和存储它。
     """
     print(f"[Action] Requesting {credential_type} from {issuer_url}...")
-    
+
     payload = {
         "type": "CredentialApplication",
         "credentialType": credential_type,
         "applicant": wallet.did,
         "timestamp": time.time(),
-        "nonce": str(uuid.uuid4())#防重放设计
+        "nonce": str(uuid.uuid4())
     }
-    
+
     serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'))
     payload["signature"] = wallet.sign_message(serialized)
-    
+
     try:
         resp = requests.post(f"{issuer_url}/issue_vc", json=payload, timeout=30)
         if resp.status_code == 200:
-            vc_list = resp.json() # 注意：Issuer 现在返回的是列表 List
-            
+            vc_list = resp.json()
             for vc in vc_list:
-                save_vc_to_wallet(vc) # 1. 存盘
-                wallet.add_vc(vc)     # 2. 加载到内存
-            
+                save_vc_to_wallet(vc)
+                wallet.add_vc(vc)
             return True, f"Received {len(vc_list)} VCs"
-        else:
-            return False, f"Issuer Error: {resp.status_code}"
+        return False, f"Issuer Error: {resp.status_code}"
     except Exception as e:
-        print(f"[Warning] Issuer unreachable ({e}). Simulating...")
-        fake_vc = {
-            "type": credential_type, 
-            "credentialSubject": {"id": wallet.did}, 
-            "mock": True
-        }
-        save_vc_to_wallet(fake_vc)
-        wallet.add_vc(fake_vc) # 模拟的也要加载
-        return True, "VC Simulated"
+        return False, f"Issuer unreachable: {e}"
+
 
 def perform_startup_check():
-    """启动时的自检流程,检测VC是否存在,不存在则申请"""
+    """启动时自检 VC，可用则复用，不可用则向 Issuer 申请。"""
     if has_local_vc():
-        print("[Startup] ✅ VC found in local storage.")
-        wallet.load_local_vcs(DATA_DIR)
+        print("[Startup][OK] Usable VC found in local storage.")
         print(f"[Startup] Loaded {len(wallet.my_vcs)} VCs into memory.")
         return
 
-    print("[Startup] ⚠️ No VC found. Initiating request sequence...")
-    ISSUER_URL = "http://localhost:8000"
-    CRED_TYPE = "Audit_License"
-    
-    success, msg = execute_request_vc(ISSUER_URL, CRED_TYPE)
-    
+    print("[Startup][WARN] No usable VC found. Initiating request sequence...")
+    issuer_url = "http://localhost:8000"
+    credential_type = "Audit_License"
+
+    success, msg = execute_request_vc(issuer_url, credential_type)
     if success:
-        print(f"[{wallet.role_name}] ✅ VC Acquired.")
-    else:
-        print(f"[{wallet.role_name}] ❌ VC Request Failed.")
+        wallet.load_local_vcs(DATA_DIR)
+        if len(wallet.my_vcs) > 0:
+            print(f"[{wallet.role_name}][OK] VC acquired.")
+            return
+        print(f"[{wallet.role_name}][ERROR] Issuer returned unusable VC.")
         sys.exit(1)
+
+    print(f"[{wallet.role_name}][ERROR] VC request failed: {msg}")
+    sys.exit(1)
 
 # === 4. API 路由 ===
 
@@ -195,7 +186,7 @@ def handle_auth():
     print(f"\n>>> [Request] Auth from {verifier_did}")
     is_valid, reason = verify_incoming_json(data)
     if not is_valid: 
-        print(f"❌ [Auth Failed] DID: {verifier_did}")
+        print(f"[Auth Failed] DID: {verifier_did}")
         print(f"   Reason: {reason}")
         return jsonify({"error": reason}), 401
 

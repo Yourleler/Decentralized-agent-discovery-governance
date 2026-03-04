@@ -197,5 +197,5 @@ def healthcheck_subgraph() -> bool:
         LOGGER.warning("Subgraph 健康检查失败: %s", exc)
         return False
 
-
+#print(healthcheck_subgraph())
 #print(fetch_incremental_agents(10360859))

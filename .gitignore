@@ -72,3 +72,8 @@ _demo_2v2/data/
 agents/holder/data/
 agents/verifier/data/memory_did_ethr_sepolia_0x59dEBEf1A4eb1d46fA4410ca27445D5aCB4313b1_to_did_ethr_sepolia_0x4791364B14574fF69520F1AAD8bb7192Eeea2ffF.json
 sidecar/data/sidecar_state.db
+fullflow_tests/results/
+fullflow_tests/**/*.snapshot.json
+fullflow_tests/**/*.db
+fullflow_tests/**/*.db-shm
+fullflow_tests/**/*.db-wal

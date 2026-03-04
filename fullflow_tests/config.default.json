@@ -1,0 +1,61 @@
+{
+  "profile": "standard",
+  "rounds": 3,
+  "account_strategy": "mixed",
+  "governance_mode": "both",
+  "discovery_bind_current": true,
+  "output_dir": "fullflow_tests/results",
+  "provision": {
+    "agent_names": [
+      "agent_a",
+      "agent_b",
+      "agent_c",
+      "agent_d"
+    ],
+    "funder_account": "master",
+    "fund_amount_eth": 0.008,
+    "min_balance_eth": 0.001,
+    "post_register_buffer_eth": 0.001
+  },
+  "discovery": {
+    "registry_address": "0x28249C2F09eF3196c1B42a0110dDD02D3B2b59B7",
+    "register_stake_eth": 0.01,
+    "register_gas_reserve_eth": 0.002,
+    "balance_reserve_eth": 0.001,
+    "subgraph_probe_timeout_seconds": 8,
+    "subgraph_url_pool": [],
+    "wait_timeout_seconds": 300,
+    "poll_interval_seconds": 5,
+    "sidecar_first": 200,
+    "sidecar_max_pages": 50,
+    "sidecar_max_rounds": 10
+  },
+  "verification": {
+    "issuer_port": 8000,
+    "holder_start_port": 5000,
+    "holder_roles": [
+      "agent_a_op",
+      "agent_b_op"
+    ],
+    "pairs": [
+      {
+        "name": "pair_c_to_a",
+        "verifier_role": "agent_c_op",
+        "holder_port": 5000
+      },
+      {
+        "name": "pair_d_to_b",
+        "verifier_role": "agent_d_op",
+        "holder_port": 5001
+      }
+    ],
+    "negative_verifier_role": "agent_c_op"
+  },
+  "governance": {
+    "registry_address": "0x28249C2F09eF3196c1B42a0110dDD02D3B2b59B7",
+    "local_script": "fullflow_tests/contracts/local_governance.js"
+  },
+  "reporting": {
+    "usd_per_eth": 2930.0
+  }
+}

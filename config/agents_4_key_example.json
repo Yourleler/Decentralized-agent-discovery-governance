@@ -5,6 +5,8 @@
         "https://sepolia.drpc.org",
         "https://sepolia.gateway.tenderly.co"
     ],
+    "subgraph_url": "https://api.studio.thegraph.com/query/1740029/agent-registry-sepolia/version/latest",
+  "subgraph_api_key": "YOUR_KEY",
     "pinata_jwt": "YOUR_PINATA_JWT_HERE",
     "pinata_gateway": "YOUR_GATEWAY.mypinata.cloud",
     "qwq_api_key": "YOUR_LLM_API_KEY_HERE",

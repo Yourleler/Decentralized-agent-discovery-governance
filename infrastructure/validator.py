@@ -165,8 +165,12 @@ class DIDValidator:
         if not valid_sig:
             return False, f"VP Signature Invalid: {reason}"
         
-        # 5. VC 验证
-        for vc in vp_json.get("verifiableCredential", []):
+        # 5. VC 验证（至少需要一条 VC）
+        vc_list = vp_json.get("verifiableCredential", [])
+        if not isinstance(vc_list, list) or len(vc_list) == 0:
+            return False, "No verifiableCredential in VP"
+
+        for vc in vc_list:
             vc_res = self._verify_single_vc(vc, holder_did)
             if not vc_res["valid"]:
                  return False, f"VC Invalid: {vc_res['error']}"
@@ -180,7 +184,17 @@ class DIDValidator:
         res = {"valid": False, "error": ""}
         
         # Subject
-        if vc["credentialSubject"]["id"] != expected_holder:
+        subject = vc.get("credentialSubject")
+        if not isinstance(subject, dict):
+            res["error"] = "credentialSubject 缺失或格式错误"
+            return res
+
+        subject_id = subject.get("id")
+        if not isinstance(subject_id, str) or not subject_id:
+            res["error"] = "credentialSubject.id 缺失"
+            return res
+
+        if subject_id != expected_holder:
             res["error"] = "Subject ID 不匹配"
             return res
             
@@ -202,7 +216,10 @@ class DIDValidator:
                 print(f"[Validator Warning] 日期解析警告: {e}")
 
         # Issuer Check
-        issuer_did = vc["issuer"]
+        issuer_did = vc.get("issuer")
+        if not isinstance(issuer_did, str) or not issuer_did:
+            res["error"] = "issuer 缺失"
+            return res
         issuer_addr = issuer_did.split(":")[-1].lower() if ":" in issuer_did else ""
         if issuer_addr not in self.trusted_issuers:
              # 为了严格性，如果不在白名单则报错，或者仅警告
@@ -211,12 +228,22 @@ class DIDValidator:
              pass
 
         # Signature
+        proof = vc.get("proof")
+        if not isinstance(proof, dict):
+            res["error"] = "proof 缺失"
+            return res
+
+        jws_sig = proof.get("jws")
+        if not isinstance(jws_sig, str) or not jws_sig:
+            res["error"] = "proof.jws 缺失"
+            return res
+
         vc_payload = vc.copy()
         if "proof" in vc_payload:
             del vc_payload["proof"]
         serialized = json.dumps(vc_payload, sort_keys=True, separators=(',', ':'))
         
-        valid_sig, reason = self.verify_request_signature(serialized, vc["proof"]["jws"], issuer_did)
+        valid_sig, reason = self.verify_request_signature(serialized, jws_sig, issuer_did)
         if not valid_sig:
             res["error"] = f"VC签名无效: {reason}"
             return res

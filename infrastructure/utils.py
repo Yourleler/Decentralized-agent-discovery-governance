@@ -1,4 +1,3 @@
-import random
 import json
 import hashlib
 import itertools
@@ -8,44 +7,106 @@ from web3 import Web3
 from .load_config import load_key_config
 
 _RPC_CYCLE = None
+_RPC_CYCLE_KEY = ""
 
 ETH_PRICE_USD = 2930.0  # 2026/1/29
 
 
+def _build_rpc_candidates(config):
+    """
+    功能：
+    从配置中组装 RPC 候选列表，优先主 URL，再追加连接池并去重。
+
+    参数：
+    config (dict): 配置字典。
+
+    返回值：
+    list[str]: 去重后的 RPC URL 列表。
+    """
+    primary = str(config.get("api_url") or "").strip()
+    pool = config.get("api_url_pool")
+
+    merged = []
+    if primary:
+        merged.append(primary)
+    if isinstance(pool, list):
+        for item in pool:
+            url = str(item).strip()
+            if url:
+                merged.append(url)
+
+    deduped = []
+    seen = set()
+    for url in merged:
+        if url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
+
+
 def get_rpc_url():
     """
-    从配置池中轮询获取 RPC 节点
-    策略：随机起点 + 顺序轮询
+    功能：
+    获取一个 RPC URL，按“主 URL 优先 + 顺序轮询”策略返回。
+
+    参数：
+    无。
+
+    返回值：
+    tuple[str, dict]: (选中的 RPC URL, 配置字典)。
     """
-    global _RPC_CYCLE
+    global _RPC_CYCLE, _RPC_CYCLE_KEY
     config = load_key_config()
+    candidates = _build_rpc_candidates(config)
+    if not candidates:
+        raise ValueError("配置缺少可用 RPC URL（api_url/api_url_pool 均为空）")
 
-    if "api_url_pool" in config and isinstance(config["api_url_pool"], list) and len(config["api_url_pool"]) > 0:
-        pool = config["api_url_pool"]
-        if _RPC_CYCLE is None:
-            start_index = random.randint(0, len(pool) - 1)
-            rotated_pool = pool[start_index:] + pool[:start_index]
-            _RPC_CYCLE = itertools.cycle(rotated_pool)
+    cycle_key = "|".join(candidates)
+    if _RPC_CYCLE is None or _RPC_CYCLE_KEY != cycle_key:
+        _RPC_CYCLE = itertools.cycle(candidates)
+        _RPC_CYCLE_KEY = cycle_key
 
-        selected_url = next(_RPC_CYCLE)
-        return selected_url, config
-
-    return config["api_url"], config
+    selected_url = next(_RPC_CYCLE)
+    return selected_url, config
 
 
 def get_w3():
-    """初始化 Web3 连接"""
+    """
+    功能：
+    初始化 Web3 连接，优先使用主 RPC，失败时自动回退到备用 RPC。
+
+    参数：
+    无。
+
+    返回值：
+    tuple[Web3, dict]: (可用 Web3 实例, 配置字典)。
+    """
     try:
-        rpc_url, config = get_rpc_url()
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
-        if not w3.is_connected():
-            print(f"[Network] 连接失败，请检查 API URL: {rpc_url}")
+        config = load_key_config()
+        candidates = _build_rpc_candidates(config)
+        if not candidates:
+            print("[Network] 配置缺少可用 RPC URL（api_url/api_url_pool 均为空）")
             exit(1)
-        return w3, config
+
+        errors = []
+        for rpc_url in candidates:
+            try:
+                provider = Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 8})
+                w3 = Web3(provider)
+                if w3.is_connected():
+                    config["api_url"] = rpc_url
+                    return w3, config
+                errors.append(f"{rpc_url} -> not connected")
+            except Exception as inner_exc:
+                errors.append(f"{rpc_url} -> {inner_exc}")
+
+        print("[Network] 所有 RPC 节点均不可达：")
+        for err in errors:
+            print(f"[Network]   {err}")
+        exit(1)
     except Exception as e:
         print(f"[Network] 初始化异常: {e}")
         exit(1)
-
 
 # ethr:did registry 地址（Sepolia）
 REGISTRY_ADDRESS = "0x03d5003bf0e79C5F5223588F347ebA39AfbC3818"
