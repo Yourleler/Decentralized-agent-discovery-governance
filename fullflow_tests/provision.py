@@ -26,6 +26,42 @@ def emit_progress(message: str) -> None:
     print(f"[fullflow][{ts}][PROVISION] {message}", flush=True)
 
 
+def build_case_assertion(
+    case_id: str,
+    capability_id: str,
+    expected: str,
+    actual: str,
+    passed: bool,
+    phase: str = "provision",
+    error: str = "",
+) -> dict[str, Any]:
+    """
+    功能：
+    构造统一用例断言结构，供 case_assertions.csv 汇总。
+
+    参数：
+    case_id (str): 用例唯一 ID。
+    capability_id (str): 能力标识。
+    expected (str): 期望描述。
+    actual (str): 实际结果描述。
+    passed (bool): 是否通过。
+    phase (str): 阶段名称。
+    error (str): 失败错误信息。
+
+    返回值：
+    dict[str, Any]: 统一断言字典。
+    """
+    return {
+        "phase": phase,
+        "case_id": case_id,
+        "capability_id": capability_id,
+        "expected": expected,
+        "actual": actual,
+        "passed": bool(passed),
+        "error": error,
+    }
+
+
 def to_did(address: str) -> str:
     """
     功能：
@@ -101,6 +137,7 @@ def build_tx_metric(
     tx: dict[str, Any],
     latency_seconds: float,
     note: str = "",
+    case_id: str = "",
 ) -> dict[str, Any]:
     """
     功能：
@@ -121,6 +158,11 @@ def build_tx_metric(
     gas_price_wei, cost_eth = calculate_tx_cost(receipt, tx)
     return {
         "category": category,
+        "phase": "provision",
+        "case_id": case_id,
+        "chain": "evm",
+        "network": "sepolia",
+        "tx_type": category,
         "actor": actor,
         "tx_hash": tx_hash,
         "block_number": int(receipt.get("blockNumber", 0)),
@@ -281,6 +323,7 @@ def fund_admin_accounts(
                 tx=tx,
                 latency_seconds=latency,
                 note=f"to={agent['name']}_admin",
+                case_id=f"provision_fund_{agent['name']}_admin",
             )
         )
 
@@ -326,6 +369,7 @@ def register_did_implicit(
                 tx=tx,
                 latency_seconds=latency,
                 note="implicit_did_registration",
+                case_id=f"provision_register_did_{agent['name']}",
             )
         )
 
@@ -381,6 +425,7 @@ def add_delegate_authorization(
                 tx=tx,
                 latency_seconds=latency,
                 note=f"delegate={op_addr}",
+                case_id=f"provision_add_delegate_{agent['name']}",
             )
         )
 
@@ -485,6 +530,15 @@ def ensure_accounts(
                 "key_path": str(key_path),
                 "key_config": key_config,
                 "note": "复用现有 agents_4_key.json",
+                "case_assertions": [
+                    build_case_assertion(
+                        case_id="provision_reuse_accounts_ready",
+                        capability_id="provision.account_reuse",
+                        expected="复用账户配置完整且可用",
+                        actual="reuse 校验通过",
+                        passed=True,
+                    )
+                ],
             }
         if strategy == "reuse":
             raise RuntimeError(f"reuse 策略校验失败: {reason}")
@@ -524,4 +578,13 @@ def ensure_accounts(
         "key_path": str(key_path),
         "key_config": key_config,
         "note": "已新建账户并写入 agents_4_key.json",
+        "case_assertions": [
+            build_case_assertion(
+                case_id="provision_fresh_accounts_generated",
+                capability_id="provision.account_bootstrap",
+                expected="新建账户、打币、DID注册与Delegate授权完成",
+                actual="fresh 路径执行成功",
+                passed=True,
+            )
+        ],
     }

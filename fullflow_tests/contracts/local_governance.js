@@ -19,7 +19,18 @@ async function main() {
   const reportTx = await contract
     .connect(reporter)
     .reportMisbehavior(target.address, "local-evidence-cid");
-  await reportTx.wait();
+  const reportReceipt = await reportTx.wait();
+
+  const freezeTx = await contract.connect(governor).freeze(target.address);
+  await freezeTx.wait();
+  const afterFreeze = await contract.getAgent(target.address);
+
+  const unfreezeTx = await contract.connect(governor).unfreeze(target.address);
+  await unfreezeTx.wait();
+  const afterUnfreeze = await contract.getAgent(target.address);
+
+  const appealTx = await contract.connect(target).appeal("local-appeal-evidence-cid");
+  const appealReceipt = await appealTx.wait();
 
   const slashTx = await contract
     .connect(governor)
@@ -41,7 +52,10 @@ async function main() {
     contractAddress: await contract.getAddress(),
     target: target.address,
     did: targetDid,
-    reportSubmitted: true,
+    reportSubmitted: Number(reportReceipt.status) === 1,
+    freezeApplied: Boolean(afterFreeze.isfrozen),
+    unfreezeApplied: !Boolean(afterUnfreeze.isfrozen),
+    appealSubmitted: Number(appealReceipt.status) === 1,
     afterSlash: {
       isSlashed: afterSlash.isSlashed,
       accumulatedPenalty: afterSlash.accumulatedPenalty.toString(),

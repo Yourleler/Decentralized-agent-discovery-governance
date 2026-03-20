@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
@@ -14,6 +15,7 @@ import uuid
 import requests
 
 from agents.verifier.runtime import VerifierRuntime
+from infrastructure.validator import DIDValidator
 from infrastructure.wallet import IdentityWallet
 
 
@@ -30,6 +32,42 @@ def emit_progress(message: str) -> None:
     """
     ts = time.strftime("%H:%M:%S")
     print(f"[fullflow][{ts}][VERIFICATION] {message}", flush=True)
+
+
+def build_case_assertion(
+    case_id: str,
+    capability_id: str,
+    expected: str,
+    actual: str,
+    passed: bool,
+    phase: str = "verification",
+    error: str = "",
+) -> dict[str, Any]:
+    """
+    功能：
+    构造统一用例断言结构，供 case_assertions.csv 汇总。
+
+    参数：
+    case_id (str): 用例唯一 ID。
+    capability_id (str): 能力标识。
+    expected (str): 期望描述。
+    actual (str): 实际描述。
+    passed (bool): 是否通过。
+    phase (str): 阶段名称。
+    error (str): 失败错误信息。
+
+    返回值：
+    dict[str, Any]: 统一断言字典。
+    """
+    return {
+        "phase": phase,
+        "case_id": case_id,
+        "capability_id": capability_id,
+        "expected": expected,
+        "actual": actual,
+        "passed": bool(passed),
+        "error": error,
+    }
 
 
 def spawn_process(command: list[str], cwd: Path, log_path: Path | None = None) -> subprocess.Popen:
@@ -253,6 +291,8 @@ def run_single_pair_audit(
     evidence_items: list[dict[str, Any]] = []
     row: dict[str, Any] = {
         "scenario": "positive",
+        "case_id": f"verification_positive_{pair_name}_round_{round_index}",
+        "capability_id": "verification.auth_probe_context_positive",
         "round": round_index,
         "pair_name": pair_name,
         "verifier_role": verifier_role,
@@ -385,6 +425,8 @@ def run_fake_signature_negative(
 
     row = {
         "scenario": "negative",
+        "case_id": "verification_negative_fake_signature_auth",
+        "capability_id": "verification.auth_signature_reject",
         "negative_case": "fake_signature_auth",
         "holder_port": holder_port,
         "expected_status_code": 401,
@@ -441,6 +483,8 @@ def run_context_mismatch_negative(
     if not auth_ok:
         row = {
             "scenario": "negative",
+            "case_id": "verification_negative_context_mismatch",
+            "capability_id": "verification.context_consistency_reject",
             "negative_case": "context_mismatch",
             "status": "failed",
             "error": f"负例前置 auth 失败: {auth_msg}",
@@ -460,6 +504,8 @@ def run_context_mismatch_negative(
     if not probe_ok:
         row = {
             "scenario": "negative",
+            "case_id": "verification_negative_context_mismatch",
+            "capability_id": "verification.context_consistency_reject",
             "negative_case": "context_mismatch",
             "status": "failed",
             "error": f"负例前置 probe 失败: {probe_msg}",
@@ -484,6 +530,8 @@ def run_context_mismatch_negative(
     passed = (reset_resp.status_code == 200) and (not ctx_ok)
     row = {
         "scenario": "negative",
+        "case_id": "verification_negative_context_mismatch",
+        "capability_id": "verification.context_consistency_reject",
         "negative_case": "context_mismatch",
         "reset_status_code": reset_resp.status_code,
         "context_result": bool(ctx_ok),
@@ -498,6 +546,183 @@ def run_context_mismatch_negative(
             "reset_status_code": reset_resp.status_code,
             "context_result": bool(ctx_ok),
             "context_message": ctx_msg,
+            "timestamp": time.time(),
+        }
+    ]
+    return row, evidence
+
+
+def request_valid_auth_vp(
+    holder_port: int,
+    verifier_role: str,
+    key_config: dict[str, Any],
+) -> tuple[bool, str, dict[str, Any] | None, str]:
+    """
+    功能：
+    发起一次合法 auth 请求并返回 VP，供篡改负例复用。
+
+    参数：
+    holder_port (int): 目标 Holder 端口。
+    verifier_role (str): Verifier 角色名。
+    key_config (dict[str, Any]): agents_4_key 配置。
+
+    返回值：
+    tuple[bool, str, dict[str, Any] | None, str]:
+    (是否成功, 消息, VP对象, 原始nonce)。
+    """
+    wallet = IdentityWallet(verifier_role, override_config=key_config)
+    nonce = str(uuid.uuid4())
+    payload = {
+        "nonce": nonce,
+        "verifier_did": wallet.did,
+        "type": "AuthRequest",
+        "timestamp": time.time(),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    payload["verifier_signature"] = wallet.sign_message(serialized)
+    try:
+        resp = requests.post(f"http://localhost:{holder_port}/auth", json=payload, timeout=30)
+    except requests.RequestException as exc:
+        return False, f"请求异常: {exc}", None, nonce
+    if resp.status_code != 200:
+        return False, f"HTTP {resp.status_code}", None, nonce
+    try:
+        vp = resp.json()
+    except ValueError:
+        return False, "返回体不是 JSON", None, nonce
+    if not isinstance(vp, dict):
+        return False, "返回 VP 结构非法", None, nonce
+    return True, "ok", vp, nonce
+
+
+def run_tampered_vp_challenge_negative(
+    holder_port: int,
+    verifier_role: str,
+    key_config: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    功能：
+    执行“篡改 VP challenge”负例，期望 verify_vp 失败。
+
+    参数：
+    holder_port (int): 目标 Holder 端口。
+    verifier_role (str): Verifier 角色名。
+    key_config (dict[str, Any]): agents_4_key 配置。
+
+    返回值：
+    tuple[dict[str, Any], list[dict[str, Any]]]:
+    (负例指标行, 证据列表)。
+    """
+    ok, msg, vp, nonce = request_valid_auth_vp(holder_port=holder_port, verifier_role=verifier_role, key_config=key_config)
+    if not ok or vp is None:
+        row = {
+            "scenario": "negative",
+            "case_id": "verification_negative_tampered_vp_challenge",
+            "capability_id": "verification.vp_challenge_integrity",
+            "negative_case": "tampered_vp_challenge",
+            "status": "failed",
+            "error": f"负例前置 auth 失败: {msg}",
+        }
+        evidence = [{"source": "negative_test", "case": "tampered_vp_challenge", "message": msg, "timestamp": time.time()}]
+        return row, evidence
+
+    tampered_vp = copy.deepcopy(vp)
+    proof = tampered_vp.get("proof") if isinstance(tampered_vp.get("proof"), dict) else {}
+    proof["challenge"] = str(uuid.uuid4())
+    tampered_vp["proof"] = proof
+
+    validator = DIDValidator()
+    valid, reason = validator.verify_vp(tampered_vp, expected_nonce=nonce)
+    passed = not valid
+    row = {
+        "scenario": "negative",
+        "case_id": "verification_negative_tampered_vp_challenge",
+        "capability_id": "verification.vp_challenge_integrity",
+        "negative_case": "tampered_vp_challenge",
+        "expected_result": "verify_vp=False",
+        "actual_result": f"verify_vp={valid}",
+        "validator_reason": reason,
+        "status": "passed" if passed else "failed",
+        "error": "" if passed else "篡改 challenge 后仍通过 verify_vp",
+    }
+    evidence = [
+        {
+            "source": "negative_test",
+            "case": "tampered_vp_challenge",
+            "original_nonce": nonce,
+            "tampered_challenge": proof.get("challenge"),
+            "validator_reason": reason,
+            "timestamp": time.time(),
+        }
+    ]
+    return row, evidence
+
+
+def run_tampered_vp_signature_negative(
+    holder_port: int,
+    verifier_role: str,
+    key_config: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    功能：
+    执行“篡改 VP 签名”负例，期望 verify_vp 失败。
+
+    参数：
+    holder_port (int): 目标 Holder 端口。
+    verifier_role (str): Verifier 角色名。
+    key_config (dict[str, Any]): agents_4_key 配置。
+
+    返回值：
+    tuple[dict[str, Any], list[dict[str, Any]]]:
+    (负例指标行, 证据列表)。
+    """
+    ok, msg, vp, nonce = request_valid_auth_vp(holder_port=holder_port, verifier_role=verifier_role, key_config=key_config)
+    if not ok or vp is None:
+        row = {
+            "scenario": "negative",
+            "case_id": "verification_negative_tampered_vp_signature",
+            "capability_id": "verification.vp_signature_integrity",
+            "negative_case": "tampered_vp_signature",
+            "status": "failed",
+            "error": f"负例前置 auth 失败: {msg}",
+        }
+        evidence = [{"source": "negative_test", "case": "tampered_vp_signature", "message": msg, "timestamp": time.time()}]
+        return row, evidence
+
+    tampered_vp = copy.deepcopy(vp)
+    proof = tampered_vp.get("proof") if isinstance(tampered_vp.get("proof"), dict) else {}
+    origin_sig = str(proof.get("jws", ""))
+    if origin_sig.startswith("0x") and len(origin_sig) > 4:
+        tail = "0" if origin_sig[-1] != "0" else "1"
+        tampered_sig = origin_sig[:-1] + tail
+    elif len(origin_sig) > 1:
+        tampered_sig = origin_sig[:-1] + ("a" if origin_sig[-1] != "a" else "b")
+    else:
+        tampered_sig = origin_sig + "0"
+    proof["jws"] = tampered_sig
+    tampered_vp["proof"] = proof
+
+    validator = DIDValidator()
+    valid, reason = validator.verify_vp(tampered_vp, expected_nonce=nonce)
+    passed = not valid
+    row = {
+        "scenario": "negative",
+        "case_id": "verification_negative_tampered_vp_signature",
+        "capability_id": "verification.vp_signature_integrity",
+        "negative_case": "tampered_vp_signature",
+        "expected_result": "verify_vp=False",
+        "actual_result": f"verify_vp={valid}",
+        "validator_reason": reason,
+        "status": "passed" if passed else "failed",
+        "error": "" if passed else "篡改签名后仍通过 verify_vp",
+    }
+    evidence = [
+        {
+            "source": "negative_test",
+            "case": "tampered_vp_signature",
+            "original_signature_prefix": origin_sig[:20],
+            "tampered_signature_prefix": tampered_sig[:20],
+            "validator_reason": reason,
             "timestamp": time.time(),
         }
     ]
@@ -542,6 +767,7 @@ def run_verification_flow(
     phase_metrics: list[dict[str, Any]] = []
     evidence_items: list[dict[str, Any]] = []
     round_summaries: list[dict[str, Any]] = []
+    case_assertions: list[dict[str, Any]] = []
 
     processes: list[subprocess.Popen] = []
     runtime_base_dir = run_dir / "verification_runtime"
@@ -649,12 +875,28 @@ def run_verification_flow(
                     round_rows.append(row)
                     evidence_items.extend(evidence)
                     phase_metrics.append(row)
+                    case_assertions.append(
+                        build_case_assertion(
+                            case_id=str(row.get("case_id", "")),
+                            capability_id=str(row.get("capability_id", "verification.auth_probe_context_positive")),
+                            expected="auth/probe/context 全通过",
+                            actual=f"status={row.get('status')} auth={row.get('auth_success')} probe={row.get('probe_success')} context={row.get('context_success')}",
+                            passed=str(row.get("status")) == "passed",
+                            error=str(row.get("error", "")),
+                        )
+                    )
                     emit_progress(
                         f"轮次{round_index} {row.get('pair_name')} -> {row.get('status')} "
                         f"(auth={row.get('auth_success')} probe={row.get('probe_success')} context={row.get('context_success')})"
                     )
 
             success_rows = [item for item in round_rows if item.get("status") == "passed"]
+            failed_rows = [item for item in round_rows if item.get("status") != "passed"]
+            if failed_rows:
+                first = failed_rows[0]
+                raise AssertionError(
+                    f"正向用例失败: pair={first.get('pair_name')} round={first.get('round')} error={first.get('error')}"
+                )
             round_tps = compute_round_tps(success_rows)
             round_summary = {
                 "scenario": "round_summary",
@@ -677,6 +919,18 @@ def run_verification_flow(
         )
         phase_metrics.append(neg_row_a)
         evidence_items.extend(neg_evidence_a)
+        case_assertions.append(
+            build_case_assertion(
+                case_id=str(neg_row_a.get("case_id", "verification_negative_fake_signature_auth")),
+                capability_id=str(neg_row_a.get("capability_id", "verification.auth_signature_reject")),
+                expected="伪造签名请求返回401并失败",
+                actual=f"status={neg_row_a.get('status')} http={neg_row_a.get('actual_status_code', '')}",
+                passed=str(neg_row_a.get("status")) == "passed",
+                error=str(neg_row_a.get("error", "")),
+            )
+        )
+        if str(neg_row_a.get("status")) != "passed":
+            raise AssertionError(f"负例失败: fake_signature_auth -> {neg_row_a.get('error')}")
 
         emit_progress("执行负例: context_mismatch")
         neg_row_b, neg_evidence_b = run_context_mismatch_negative(
@@ -687,6 +941,60 @@ def run_verification_flow(
         )
         phase_metrics.append(neg_row_b)
         evidence_items.extend(neg_evidence_b)
+        case_assertions.append(
+            build_case_assertion(
+                case_id=str(neg_row_b.get("case_id", "verification_negative_context_mismatch")),
+                capability_id=str(neg_row_b.get("capability_id", "verification.context_consistency_reject")),
+                expected="重置后 context 检查失败",
+                actual=f"status={neg_row_b.get('status')} context_result={neg_row_b.get('context_result')}",
+                passed=str(neg_row_b.get("status")) == "passed",
+                error=str(neg_row_b.get("error", "")),
+            )
+        )
+        if str(neg_row_b.get("status")) != "passed":
+            raise AssertionError(f"负例失败: context_mismatch -> {neg_row_b.get('error')}")
+
+        emit_progress("执行负例: tampered_vp_challenge")
+        neg_row_c, neg_evidence_c = run_tampered_vp_challenge_negative(
+            holder_port=holder_start_port,
+            verifier_role=negative_verifier_role,
+            key_config=key_config,
+        )
+        phase_metrics.append(neg_row_c)
+        evidence_items.extend(neg_evidence_c)
+        case_assertions.append(
+            build_case_assertion(
+                case_id=str(neg_row_c.get("case_id", "verification_negative_tampered_vp_challenge")),
+                capability_id=str(neg_row_c.get("capability_id", "verification.vp_challenge_integrity")),
+                expected="篡改 challenge 后 verify_vp 失败",
+                actual=f"status={neg_row_c.get('status')} result={neg_row_c.get('actual_result', '')}",
+                passed=str(neg_row_c.get("status")) == "passed",
+                error=str(neg_row_c.get("error", "")),
+            )
+        )
+        if str(neg_row_c.get("status")) != "passed":
+            raise AssertionError(f"负例失败: tampered_vp_challenge -> {neg_row_c.get('error')}")
+
+        emit_progress("执行负例: tampered_vp_signature")
+        neg_row_d, neg_evidence_d = run_tampered_vp_signature_negative(
+            holder_port=holder_start_port,
+            verifier_role=negative_verifier_role,
+            key_config=key_config,
+        )
+        phase_metrics.append(neg_row_d)
+        evidence_items.extend(neg_evidence_d)
+        case_assertions.append(
+            build_case_assertion(
+                case_id=str(neg_row_d.get("case_id", "verification_negative_tampered_vp_signature")),
+                capability_id=str(neg_row_d.get("capability_id", "verification.vp_signature_integrity")),
+                expected="篡改签名后 verify_vp 失败",
+                actual=f"status={neg_row_d.get('status')} result={neg_row_d.get('actual_result', '')}",
+                passed=str(neg_row_d.get("status")) == "passed",
+                error=str(neg_row_d.get("error", "")),
+            )
+        )
+        if str(neg_row_d.get("status")) != "passed":
+            raise AssertionError(f"负例失败: tampered_vp_signature -> {neg_row_d.get('error')}")
     finally:
         emit_progress("停止 Issuer/Holder 进程")
         terminate_processes(processes)
@@ -695,4 +1003,5 @@ def run_verification_flow(
         "phase_metrics": phase_metrics,
         "evidence_items": evidence_items,
         "round_summaries": round_summaries,
+        "case_assertions": case_assertions,
     }

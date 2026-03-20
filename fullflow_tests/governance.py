@@ -27,6 +27,42 @@ def emit_progress(message: str) -> None:
     print(f"[fullflow][{ts}][GOVERNANCE] {message}", flush=True)
 
 
+def build_case_assertion(
+    case_id: str,
+    capability_id: str,
+    expected: str,
+    actual: str,
+    passed: bool,
+    phase: str = "governance",
+    error: str = "",
+) -> dict[str, Any]:
+    """
+    功能：
+    构造统一用例断言结构，供 case_assertions.csv 汇总。
+
+    参数：
+    case_id (str): 用例唯一 ID。
+    capability_id (str): 能力标识。
+    expected (str): 期望描述。
+    actual (str): 实际结果描述。
+    passed (bool): 是否通过。
+    phase (str): 阶段名称。
+    error (str): 失败错误信息。
+
+    返回值：
+    dict[str, Any]: 统一断言字典。
+    """
+    return {
+        "phase": phase,
+        "case_id": case_id,
+        "capability_id": capability_id,
+        "expected": expected,
+        "actual": actual,
+        "passed": bool(passed),
+        "error": error,
+    }
+
+
 GOVERNANCE_ABI: list[dict[str, Any]] = [
     {
         "inputs": [
@@ -41,7 +77,7 @@ GOVERNANCE_ABI: list[dict[str, Any]] = [
 ]
 
 
-def cache_evidence_to_local_ipfs(evidence_payload: dict[str, Any]) -> str:
+def cache_evidence_to_local_ipfs(evidence_payload: dict[str, Any]) -> tuple[str, float, int]:
     """
     功能：
     将治理证据 JSON 写入本地 .ipfs_cache 并返回本地 CID 字符串。
@@ -62,8 +98,24 @@ def cache_evidence_to_local_ipfs(evidence_payload: dict[str, Any]) -> str:
     cid = f"local-evidence-{digest[:40]}"
     cache_dir = Path(".ipfs_cache").resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
     (cache_dir / cid).write_bytes(raw)
-    return cid
+    elapsed = time.perf_counter() - started
+    return cid, elapsed, len(raw)
+
+
+def load_local_evidence_cid(cid: str) -> tuple[dict[str, Any], float, int]:
+    """
+    从本地 .ipfs_cache 读取治理证据 CID，用于统计下载耗时。
+    """
+    cache_path = Path(".ipfs_cache").resolve() / cid
+    started = time.perf_counter()
+    raw = cache_path.read_bytes()
+    elapsed = time.perf_counter() - started
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"证据 CID 内容不是对象: {cid}")
+    return payload, elapsed, len(raw)
 
 
 def build_tx_metric(
@@ -74,6 +126,7 @@ def build_tx_metric(
     gas_price_wei: int,
     latency_seconds: float,
     note: str = "",
+    case_id: str = "",
 ) -> dict[str, Any]:
     """
     功能：
@@ -96,6 +149,11 @@ def build_tx_metric(
     cost_eth = float(Web3.from_wei(gas_used * effective, "ether"))
     return {
         "category": category,
+        "phase": "governance",
+        "case_id": case_id,
+        "chain": "evm",
+        "network": "sepolia",
+        "tx_type": category,
         "actor": actor,
         "tx_hash": tx_hash,
         "block_number": int(receipt.get("blockNumber", 0)),
@@ -167,6 +225,7 @@ def submit_sepolia_report(
         gas_price_wei=gas_price,
         latency_seconds=latency,
         note=f"target={target_agent_address} cid={evidence_cid}",
+        case_id="governance_sepolia_report_misbehavior",
     )
     gov_metric = {
         "mode": "sepolia",
@@ -213,7 +272,7 @@ def run_local_governance_script(script_path: str, cwd: Path) -> dict[str, Any]:
 
     metric = {
         "mode": "local",
-        "action": "report_slash_restore",
+        "action": "report_slash_restore_freeze_unfreeze_appeal",
         "status": "passed" if proc.returncode == 0 else "failed",
         "latency_seconds": latency,
         "return_code": proc.returncode,
@@ -222,6 +281,32 @@ def run_local_governance_script(script_path: str, cwd: Path) -> dict[str, Any]:
         "payload": parsed_payload,
     }
     return metric
+
+
+def validate_local_governance_payload(payload: dict[str, Any]) -> tuple[bool, str]:
+    """
+    功能：
+    校验本地治理脚本返回 payload 是否包含关键治理动作结果。
+
+    参数：
+    payload (dict[str, Any]): 本地脚本输出 payload。
+
+    返回值：
+    tuple[bool, str]: (是否通过, 错误信息)。
+    """
+    required_bools = ["reportSubmitted", "freezeApplied", "unfreezeApplied", "appealSubmitted"]
+    for key in required_bools:
+        if not isinstance(payload.get(key), bool):
+            return False, f"缺少或非法字段: {key}"
+        if not bool(payload.get(key)):
+            return False, f"关键动作未成功: {key}"
+    if not isinstance(payload.get("afterSlash"), dict):
+        return False, "缺少 afterSlash"
+    if not isinstance(payload.get("afterRestore"), dict):
+        return False, "缺少 afterRestore"
+    if "accumulatedPenalty" not in payload["afterSlash"] or "accumulatedPenalty" not in payload["afterRestore"]:
+        return False, "afterSlash/afterRestore 缺少 accumulatedPenalty"
+    return True, ""
 
 
 def build_local_governance_command(script_path: str, cwd: Path) -> list[str]:
@@ -289,10 +374,11 @@ def run_governance_flow(
     mode = str(config.get("governance_mode", "both")).lower()
     gov_cfg = dict(config.get("governance", {}))
     metrics: list[dict[str, Any]] = []
+    case_assertions: list[dict[str, Any]] = []
 
     holders = list(discovery_result.get("holders", []))
     if not holders:
-        return {"governance_metrics": metrics, "evidence_cid": ""}
+        return {"governance_metrics": metrics, "evidence_cid": "", "case_assertions": case_assertions}
     target_agent = str(holders[0]["admin_address"])
 
     if not evidence_items:
@@ -309,7 +395,50 @@ def run_governance_flow(
         "run_dir": str(run_dir),
         "evidence_items": evidence_items,
     }
-    evidence_cid = cache_evidence_to_local_ipfs(evidence_payload)
+    evidence_cid, cid_upload_seconds, cid_upload_bytes = cache_evidence_to_local_ipfs(evidence_payload)
+    loaded_payload, cid_download_seconds, cid_download_bytes = load_local_evidence_cid(evidence_cid)
+    cid_roundtrip_ok = loaded_payload == evidence_payload
+    metrics.append(
+        {
+            "mode": "local",
+            "action": "cid_io",
+            "status": "passed" if cid_roundtrip_ok else "failed",
+            "cid_scope": "governance_evidence",
+            "cid": evidence_cid,
+            "io_direction": "upload",
+            "io_backend": "local_cache",
+            "io_seconds": cid_upload_seconds,
+            "payload_bytes": cid_upload_bytes,
+        }
+    )
+    metrics.append(
+        {
+            "mode": "local",
+            "action": "cid_io",
+            "status": "passed" if cid_roundtrip_ok else "failed",
+            "cid_scope": "governance_evidence",
+            "cid": evidence_cid,
+            "io_direction": "download",
+            "io_backend": "local_cache",
+            "io_seconds": cid_download_seconds,
+            "payload_bytes": cid_download_bytes,
+        }
+    )
+    case_assertions.append(
+        build_case_assertion(
+            case_id="governance_evidence_cid_roundtrip",
+            capability_id="governance.evidence_cid_roundtrip",
+            expected="evidence CID roundtrip should equal source payload",
+            actual=(
+                f"ok={cid_roundtrip_ok} upload_s={cid_upload_seconds:.6f} "
+                f"download_s={cid_download_seconds:.6f} bytes={cid_upload_bytes}"
+            ),
+            passed=cid_roundtrip_ok,
+            error="" if cid_roundtrip_ok else "evidence CID payload mismatch",
+        )
+    )
+    if not cid_roundtrip_ok:
+        raise AssertionError("治理证据 CID roundtrip 校验失败")
     emit_progress(f"证据已固化到本地 CID: {evidence_cid}")
 
     if mode in {"sepolia", "both"}:
@@ -335,13 +464,49 @@ def run_governance_flow(
         )
         metrics.append(gov_metric)
         chain_tx_metrics.append(tx_metric)
+        sepolia_passed = str(gov_metric.get("status")) == "passed"
+        case_assertions.append(
+            build_case_assertion(
+                case_id="governance_sepolia_report_misbehavior",
+                capability_id="governance.report_misbehavior_onchain",
+                expected="reportMisbehavior 上链成功",
+                actual=f"status={gov_metric.get('status')} tx_hash={gov_metric.get('tx_hash')}",
+                passed=sepolia_passed,
+                error="" if sepolia_passed else "reportMisbehavior 交易失败",
+            )
+        )
+        if not sepolia_passed:
+            raise AssertionError("治理断言失败: Sepolia reportMisbehavior 未通过")
         emit_progress(f"Sepolia 举报已提交: {gov_metric.get('tx_hash')}")
 
     if mode in {"local", "both"}:
         script_path = str(gov_cfg.get("local_script", "fullflow_tests/contracts/local_governance.js"))
         emit_progress(f"执行本地治理脚本: {script_path}")
         metric = run_local_governance_script(script_path=script_path, cwd=Path(".").resolve())
+        payload = metric.get("payload", {})
+        local_ok = False
+        local_error = ""
+        if str(metric.get("status")) == "passed" and isinstance(payload, dict):
+            local_ok, local_error = validate_local_governance_payload(payload)
+        if not local_ok and not local_error and str(metric.get("status")) != "passed":
+            local_error = f"脚本执行失败 return_code={metric.get('return_code')}"
+        if not local_ok:
+            metric["status"] = "failed"
+            metric["validation_error"] = local_error
+
         metrics.append(metric)
+        case_assertions.append(
+            build_case_assertion(
+                case_id="governance_local_full_action_set",
+                capability_id="governance.local_report_slash_restore_freeze_unfreeze_appeal",
+                expected="本地治理完成 report/slash/restore/freeze/unfreeze/appeal",
+                actual=f"status={metric.get('status')} error={metric.get('validation_error', '')}",
+                passed=local_ok,
+                error=local_error if not local_ok else "",
+            )
+        )
+        if not local_ok:
+            raise AssertionError(f"治理断言失败: 本地治理结果不完整 -> {local_error}")
         emit_progress(f"本地治理状态: {metric.get('status')}")
 
     if mode == "off":
@@ -353,8 +518,18 @@ def run_governance_flow(
                 "message": "governance_mode=off，跳过治理执行",
             }
         )
+        case_assertions.append(
+            build_case_assertion(
+                case_id="governance_skip",
+                capability_id="governance.skip_mode",
+                expected="治理被显式关闭",
+                actual="governance_mode=off",
+                passed=True,
+            )
+        )
 
     return {
         "evidence_cid": evidence_cid,
         "governance_metrics": metrics,
+        "case_assertions": case_assertions,
     }

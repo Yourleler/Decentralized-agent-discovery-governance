@@ -1,9 +1,10 @@
 {
-  "profile": "standard",
+  "profile": "paper",
   "rounds": 3,
   "account_strategy": "mixed",
   "governance_mode": "both",
   "discovery_bind_current": true,
+  "random_seed": 20260307,
   "output_dir": "fullflow_tests/results",
   "provision": {
     "agent_names": [
@@ -56,6 +57,51 @@
     "local_script": "fullflow_tests/contracts/local_governance.js"
   },
   "reporting": {
-    "usd_per_eth": 2930.0
+    "usd_per_eth": 2930.0,
+    "usd_cny_rate": 7.2,
+    "comment_reporting": "论文成本口径：ETH->USD->CNY 固定汇率，保证不同批次可横向比较。",
+    "l2_profiles": {
+      "base": {
+        "gas_price_gwei": 0.03,
+        "l1_data_fee_eth_per_tx": 0.000003
+      },
+      "optimism": {
+        "gas_price_gwei": 0.02,
+        "l1_data_fee_eth_per_tx": 0.000004
+      },
+      "arbitrum": {
+        "gas_price_gwei": 0.01,
+        "l1_data_fee_eth_per_tx": 0.000002
+      }
+    },
+    "scale_projection": {
+      "enabled": true,
+      "agent_counts": [100, 500, 1000],
+      "baseline_agents": 2,
+      "comment_scale_projection": "按当前样本做线性外推，输出总时延与总成本估算。"
+    },
+    "operation_estimation": {
+      "comment_operation_estimation": "按操作类型估算L2成本；无实测链上样本时使用默认gas。",
+      "action_counts": {
+        "discovery_register_agent": 2,
+        "discovery_update_metadata": 2,
+        "governance_report_misbehavior": 1,
+        "governance_appeal": 1,
+        "governance_freeze": 1,
+        "governance_unfreeze": 1,
+        "governance_slash": 1,
+        "governance_restore": 1
+      },
+      "gas_defaults": {
+        "discovery_register_agent": 280000,
+        "discovery_update_metadata": 120000,
+        "governance_report_misbehavior": 300000,
+        "governance_appeal": 130000,
+        "governance_freeze": 90000,
+        "governance_unfreeze": 90000,
+        "governance_slash": 150000,
+        "governance_restore": 110000
+      }
+    }
   }
 }

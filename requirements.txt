@@ -82,3 +82,4 @@ sentence-transformers==5.2.2
 fastapi==0.129.0
 uvicorn==0.40.0
 APScheduler==3.11.2
+matplotlib==3.10.7

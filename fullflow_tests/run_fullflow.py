@@ -85,6 +85,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="治理模式",
     )
     parser.add_argument("--output-dir", default=None, help="输出目录")
+    parser.add_argument("--random-seed", type=int, default=None, help="随机种子（用于复测）")
     parser.add_argument(
         "--discovery-bind-current",
         default=None,
@@ -110,6 +111,13 @@ def build_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.profile:
         cfg["profile"] = args.profile
+    profile = str(cfg.get("profile", "standard")).strip().lower()
+    if profile == "paper":
+        cfg.setdefault("rounds", 3)
+        cfg.setdefault("account_strategy", "mixed")
+        cfg.setdefault("governance_mode", "both")
+        cfg.setdefault("discovery_bind_current", True)
+        cfg.setdefault("random_seed", 20260307)
     if args.rounds is not None:
         cfg["rounds"] = args.rounds
     if args.account_strategy:
@@ -118,6 +126,8 @@ def build_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
         cfg["governance_mode"] = args.governance_mode
     if args.output_dir:
         cfg["output_dir"] = args.output_dir
+    if args.random_seed is not None:
+        cfg["random_seed"] = args.random_seed
     if args.discovery_bind_current is not None:
         cfg["discovery_bind_current"] = args.discovery_bind_current.lower() == "true"
     return cfg

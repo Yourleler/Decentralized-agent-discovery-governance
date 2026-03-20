@@ -7,7 +7,7 @@
 3. 发现链路（metadata 注册、Subgraph 收录等待、Sidecar 命中断言）。
 4. 认证链路（Auth / Probe / Context，标准 2v2，默认 3 轮）。
 5. 治理链路（Sepolia 举报留痕 + 本地 Hardhat 完整治理）。
-6. 性能与成本报表（CSV + JSON + Markdown 摘要）。
+6. 性能与成本报表（CSV + JSON + Markdown + PNG 图表）。
 
 ## 2. 流程总览（文字版）
 Provision -> Discovery -> Verification -> Governance -> Reporting
@@ -36,7 +36,7 @@ python fullflow_tests/run_fullflow.py
 ```
 
 默认等价于：
-1. `--profile standard`
+1. `--profile paper`
 2. `--rounds 3`
 3. `--account-strategy mixed`
 4. `--governance-mode both`
@@ -59,6 +59,7 @@ python fullflow_tests/run_fullflow.py \
 4. `--governance-mode`: `sepolia|local|both|off`。
 5. `--output-dir`: 结果目录根路径。
 6. `--discovery-bind-current`: 是否强绑定本次账户。
+7. `--random-seed`: 复测随机种子（论文建议固定）。
 
 策略补充：
 1. `mixed`：优先复用账户，仅检查角色完整性；余额不足由发现阶段按需自动补币。
@@ -82,11 +83,19 @@ python fullflow_tests/run_fullflow.py \
 
 固定产物：
 1. `phase_metrics.csv`：验证阶段和负例阶段指标（含 T1~T12、SLA、状态）。
-2. `chain_tx_metrics.csv`：链上交易成本（gas、耗时、ETH 成本）。
+2. `chain_tx_metrics.csv`：链上交易成本（含 phase/case_id/ETH/USD/CNY）。
 3. `discovery_metrics.csv`：Subgraph 等待、同步统计、检索命中断言。
 4. `governance_metrics.csv`：Sepolia 与本地治理执行结果。
-5. `raw_metrics.json`：全量原始对象（便于二次分析）。
-6. `summary.md`：论文可直接引用的汇总视图。
+5. `case_assertions.csv`：能力-用例矩阵断言（`capability_id/expected/actual/passed/error`）。
+6. `latency_stats.csv`：阶段与用例延迟统计（mean/p50/p95/max）。
+7. `l2_cost_estimates.csv`：Base/Optimism/Arbitrum 成本估算（ETH/USD/CNY）。
+8. `run_manifest.json`：复测清单（profile、seed、配置摘要、git commit）。
+9. `raw_metrics.json`：全量原始对象（便于二次分析）。
+10. `summary.md`：论文可直接引用的汇总视图（含图表引用）。
+11. `chart_latency_stage.png`：阶段延迟图（均值+P95）。
+12. `chart_case_passrate.png`：能力维度通过率图。
+13. `chart_tx_cost_eth.png`：交易类别成本图（ETH）。
+14. `chart_l2_cost_cny.png`：L2 人民币成本对比图。
 
 ## 8. 常见失败与排查
 1. RPC 连接失败：检查 `config/key.json` 的 `api_url`。

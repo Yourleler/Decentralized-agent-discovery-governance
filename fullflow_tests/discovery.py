@@ -31,6 +31,42 @@ def emit_progress(message: str) -> None:
     print(f"[fullflow][{ts}][DISCOVERY] {message}", flush=True)
 
 
+def build_case_assertion(
+    case_id: str,
+    capability_id: str,
+    expected: str,
+    actual: str,
+    passed: bool,
+    phase: str = "discovery",
+    error: str = "",
+) -> dict[str, Any]:
+    """
+    功能：
+    构造统一用例断言结构，供 case_assertions.csv 汇总。
+
+    参数：
+    case_id (str): 用例唯一 ID。
+    capability_id (str): 能力标识。
+    expected (str): 期望描述。
+    actual (str): 实际结果描述。
+    passed (bool): 是否通过。
+    phase (str): 所属阶段。
+    error (str): 失败错误信息。
+
+    返回值：
+    dict[str, Any]: 统一断言字典。
+    """
+    return {
+        "phase": phase,
+        "case_id": case_id,
+        "capability_id": capability_id,
+        "expected": expected,
+        "actual": actual,
+        "passed": bool(passed),
+        "error": error,
+    }
+
+
 def unique_subgraph_urls(primary_url: str, fallback_urls: list[str] | None) -> list[str]:
     """
     功能：
@@ -181,6 +217,81 @@ class SimpleVectorIndex:
         return scored[: max(top_k, 1)]
 
 
+class TimedVectorIndex:
+    """
+    包装向量索引，记录 upsert/delete/query 的耗时统计。
+    """
+
+    def __init__(self, delegate: Any, backend_name: str) -> None:
+        self._delegate = delegate
+        self._backend_name = backend_name
+        self._stats: dict[str, dict[str, float]] = {
+            "upsert": {"count": 0.0, "total_ms": 0.0, "max_ms": 0.0, "total_results": 0.0},
+            "delete": {"count": 0.0, "total_ms": 0.0, "max_ms": 0.0, "total_results": 0.0},
+            "query": {"count": 0.0, "total_ms": 0.0, "max_ms": 0.0, "total_results": 0.0},
+        }
+        self._last_query_latency_ms = 0.0
+        self._last_query_result_count = 0
+
+    def _record(self, operation: str, elapsed_ms: float, result_count: int = 0) -> None:
+        bucket = self._stats[operation]
+        bucket["count"] += 1.0
+        bucket["total_ms"] += float(elapsed_ms)
+        bucket["max_ms"] = max(bucket["max_ms"], float(elapsed_ms))
+        bucket["total_results"] += float(max(result_count, 0))
+
+    def upsert(self, agent_id: str, vector_text: str, metadata: dict[str, Any] | None = None) -> None:
+        started = time.perf_counter()
+        self._delegate.upsert(agent_id=agent_id, vector_text=vector_text, metadata=metadata)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._record("upsert", elapsed_ms, result_count=0)
+
+    def delete(self, agent_id: str) -> None:
+        started = time.perf_counter()
+        self._delegate.delete(agent_id=agent_id)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._record("delete", elapsed_ms, result_count=0)
+
+    def query(self, text: str, top_k: int = 5, where: dict[str, Any] | None = None) -> list[SearchHit]:
+        started = time.perf_counter()
+        results = self._delegate.query(text=text, top_k=top_k, where=where)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        result_count = len(results)
+        self._last_query_latency_ms = elapsed_ms
+        self._last_query_result_count = result_count
+        self._record("query", elapsed_ms, result_count=result_count)
+        return results
+
+    def get_backend_name(self) -> str:
+        return self._backend_name
+
+    def get_last_query_latency_ms(self) -> float:
+        return self._last_query_latency_ms
+
+    def get_last_query_result_count(self) -> int:
+        return self._last_query_result_count
+
+    def build_summary_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for operation in ("upsert", "delete", "query"):
+            bucket = self._stats[operation]
+            count = int(bucket["count"])
+            mean_ms = float(bucket["total_ms"]) / float(count) if count > 0 else 0.0
+            rows.append(
+                {
+                    "vector_backend": self._backend_name,
+                    "vector_operation": operation,
+                    "vector_call_count": count,
+                    "vector_total_latency_ms": float(bucket["total_ms"]),
+                    "vector_mean_latency_ms": mean_ms,
+                    "vector_p95_latency_ms": mean_ms,  # 轻量统计，样本量小时用均值近似
+                    "vector_max_latency_ms": float(bucket["max_ms"]),
+                    "vector_total_results": int(bucket["total_results"]),
+                }
+            )
+        return rows
+
+
 def to_did(address: str) -> str:
     """
     功能：
@@ -203,6 +314,7 @@ def build_tx_metric(
     gas_price_wei: int,
     latency_seconds: float,
     note: str = "",
+    case_id: str = "",
 ) -> dict[str, Any]:
     """
     功能：
@@ -225,6 +337,11 @@ def build_tx_metric(
     cost_eth = float(Web3.from_wei(gas_used * effective, "ether"))
     return {
         "category": category,
+        "phase": "discovery",
+        "case_id": case_id,
+        "chain": "evm",
+        "network": "sepolia",
+        "tx_type": category,
         "actor": actor,
         "tx_hash": tx_hash,
         "block_number": int(receipt.get("blockNumber", 0)),
@@ -237,7 +354,7 @@ def build_tx_metric(
     }
 
 
-def cache_metadata_as_local_cid(metadata: dict[str, Any]) -> str:
+def cache_metadata_as_local_cid(metadata: dict[str, Any]) -> tuple[str, float, int]:
     """
     功能：
     将 metadata JSON 写入本地 .ipfs_cache，并返回本地 CID 字符串。
@@ -253,8 +370,24 @@ def cache_metadata_as_local_cid(metadata: dict[str, Any]) -> str:
     cid = f"local-fullflow-{digest[:40]}"
     cache_path = Path(".ipfs_cache").resolve()
     cache_path.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
     (cache_path / cid).write_bytes(raw)
-    return cid
+    elapsed = time.perf_counter() - started
+    return cid, elapsed, len(raw)
+
+
+def load_local_cid_payload(cid: str) -> tuple[dict[str, Any], float, int]:
+    """
+    从本地 .ipfs_cache 读取 CID 文件，用于统计“下载”口径耗时。
+    """
+    cache_path = Path(".ipfs_cache").resolve() / cid
+    started = time.perf_counter()
+    raw = cache_path.read_bytes()
+    elapsed = time.perf_counter() - started
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"CID 内容不是对象: {cid}")
+    return payload, elapsed, len(raw)
 
 
 def make_metadata_deterministic(metadata: dict[str, Any], stable_tag: str) -> dict[str, Any]:
@@ -316,6 +449,7 @@ def ensure_admin_balance(
     funder_info: dict[str, str] | None,
     chain_tx_metrics: list[dict[str, Any]],
     actor_role: str,
+    case_id: str = "",
 ) -> None:
     """
     功能：
@@ -372,6 +506,7 @@ def ensure_admin_balance(
             gas_price_wei=topup_gas_price,
             latency_seconds=latency,
             note=f"target={actor_role} amount_wei={shortfall_wei}",
+            case_id=case_id,
         )
     )
 
@@ -388,6 +523,7 @@ def register_or_update_agent(
     actor_role: str,
     funder_info: dict[str, str] | None = None,
     balance_reserve_eth: float = 0.002,
+    case_id: str = "",
 ) -> tuple[int, str]:
     """
     功能：
@@ -426,6 +562,7 @@ def register_or_update_agent(
             funder_info=funder_info,
             chain_tx_metrics=chain_tx_metrics,
             actor_role=actor_role,
+            case_id=case_id,
         )
         tx = registry_contract.functions.registerAgent(did, cid).build_transaction(
             {
@@ -446,6 +583,7 @@ def register_or_update_agent(
                 gas_price_wei=gas_price,
                 latency_seconds=latency,
                 note=f"did={did} cid={cid}",
+                case_id=case_id,
             )
         )
         return int(receipt.get("blockNumber", 0)), "register"
@@ -465,6 +603,7 @@ def register_or_update_agent(
         funder_info=funder_info,
         chain_tx_metrics=chain_tx_metrics,
         actor_role=actor_role,
+        case_id=case_id,
     )
     tx = registry_contract.functions.updateServiceMetadata(cid).build_transaction(
         {
@@ -485,6 +624,7 @@ def register_or_update_agent(
             gas_price_wei=gas_price,
             latency_seconds=latency,
             note=f"cid={cid}",
+            case_id=case_id,
         )
     )
     return int(receipt.get("blockNumber", 0)), "update"
@@ -573,6 +713,9 @@ query AgentsByDid($dids: [String!]) {
     id
     did
     cid
+    initScore
+    accumulatedPenalty
+    lastMisconductTimestamp
     isRegistered
     slashed
     lastUpdatedBlock
@@ -625,7 +768,7 @@ def wait_subgraph_index(
     expected_holders: list[dict[str, Any]],
     timeout_seconds: int,
     poll_interval_seconds: int,
-) -> tuple[bool, int, float]:
+) -> tuple[bool, int, float, dict[str, dict[str, Any]]]:
     """
     功能：
     轮询 Subgraph，等待本次 Holder 数据被索引并可查询。
@@ -638,13 +781,31 @@ def wait_subgraph_index(
     poll_interval_seconds (int): 轮询间隔（秒）。
 
     返回值：
-    tuple[bool, int, float]: (是否成功, 轮询次数, 总耗时秒数)。
+    tuple[bool, int, float, dict[str, dict[str, Any]]]:
+    (是否成功, 轮询次数, 总耗时秒数, 最后一次查询映射)。
     """
     started = time.time()
     polls = 0
     transient_errors = 0
     expected_dids = [str(item["did"]) for item in expected_holders]
     expected_cids = {str(item["did"]): str(item["cid"]) for item in expected_holders}
+    expected_init_scores = {
+        str(item["did"]): int(item.get("expected_init_score", 0))
+        for item in expected_holders
+    }
+    expected_penalties = {
+        str(item["did"]): int(item.get("expected_accumulated_penalty", 0))
+        for item in expected_holders
+    }
+    expected_last_ts = {
+        str(item["did"]): int(item.get("expected_last_misconduct_ts", 0))
+        for item in expected_holders
+    }
+    expected_slashed = {
+        str(item["did"]): bool(item.get("expected_slashed", False))
+        for item in expected_holders
+    }
+    last_seen: dict[str, dict[str, Any]] = {}
 
     emit_progress(
         f"开始等待 Subgraph 收录，目标={len(expected_dids)}，超时={timeout_seconds}s，轮询间隔={poll_interval_seconds}s"
@@ -657,6 +818,7 @@ def wait_subgraph_index(
                 headers=headers,
                 dids=expected_dids,
             )
+            last_seen = seen
         except Exception as exc:
             transient_errors += 1
             elapsed = time.time() - started
@@ -676,20 +838,32 @@ def wait_subgraph_index(
             if str(agent_item.get("cid", "")) != expected_cids[did]:
                 all_ready = False
                 break
+            if int(agent_item.get("initScore", 0) or 0) != expected_init_scores[did]:
+                all_ready = False
+                break
+            if int(agent_item.get("accumulatedPenalty", 0) or 0) != expected_penalties[did]:
+                all_ready = False
+                break
+            if int(agent_item.get("lastMisconductTimestamp", 0) or 0) != expected_last_ts[did]:
+                all_ready = False
+                break
+            if bool(agent_item.get("slashed", False)) != expected_slashed[did]:
+                all_ready = False
+                break
             if not bool(agent_item.get("isRegistered", False)):
                 all_ready = False
                 break
             ready_count += 1
         if all_ready:
             emit_progress(f"Subgraph 收录完成，轮询次数={polls}")
-            return True, polls, time.time() - started
+            return True, polls, time.time() - started, seen
         elapsed = time.time() - started
         emit_progress(
             f"轮询#{polls} 未全部就绪，当前就绪 {ready_count}/{len(expected_dids)}，已等待 {elapsed:.1f}s"
         )
         time.sleep(poll_interval_seconds)
     emit_progress("Subgraph 收录等待超时")
-    return False, polls, time.time() - started
+    return False, polls, time.time() - started, last_seen
 
 
 def run_sidecar_assertion(
@@ -700,7 +874,7 @@ def run_sidecar_assertion(
     max_pages: int,
     max_rounds: int,
     subgraph_url_override: str | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """
     功能：
     执行 Sidecar 同步与检索断言，验证本次账户可被命中。
@@ -719,12 +893,13 @@ def run_sidecar_assertion(
     (同步统计列表, 检索断言统计列表)。
     """
     db_path = run_dir / "discovery_sidecar_state.db"
-    vector_index = SimpleVectorIndex()
+    vector_index = TimedVectorIndex(delegate=SimpleVectorIndex(), backend_name="simple_memory")
     state_store = SQLiteStateStore(str(db_path))
     state_store.init_db()
 
     sync_rows: list[dict[str, Any]] = []
     assert_rows: list[dict[str, Any]] = []
+    vector_summary_rows: list[dict[str, Any]] = []
 
     if subgraph_url_override:
         from sidecar.adapters import subgraph_client
@@ -804,12 +979,16 @@ def run_sidecar_assertion(
                     "found": found,
                     "rank": rank,
                     "query_latency_ms": query_ms,
+                    "vector_match_latency_ms": vector_index.get_last_query_latency_ms(),
+                    "vector_result_count": vector_index.get_last_query_result_count(),
+                    "vector_backend": vector_index.get_backend_name(),
                     "result_count": len(results),
                 }
             )
+        vector_summary_rows = vector_index.build_summary_rows()
     finally:
         state_store.close()
-    return sync_rows, assert_rows
+    return sync_rows, assert_rows, vector_summary_rows
 
 
 def run_discovery_flow(
@@ -861,8 +1040,10 @@ def run_discovery_flow(
     holder_ports = [5000, 5001]
 
     holders: list[dict[str, Any]] = []
+    case_assertions: list[dict[str, Any]] = []
     block_numbers: list[int] = []
     action_flags: list[str] = []
+    cid_io_rows: list[dict[str, Any]] = []
 
     for idx, role in enumerate(holder_admin_roles):
         admin = accounts.get(role)
@@ -884,7 +1065,51 @@ def run_discovery_flow(
             vector_text=f"{query_keyword} fullflow agentdid holder {role}",
         )
         metadata = make_metadata_deterministic(metadata=metadata, stable_tag=role)
-        cid = cache_metadata_as_local_cid(metadata)
+        cid, cid_upload_seconds, cid_upload_bytes = cache_metadata_as_local_cid(metadata)
+        cid_io_rows.append(
+            {
+                "metric_type": "cid_io",
+                "phase": "discovery",
+                "cid_scope": "metadata",
+                "cid_role": role,
+                "cid": cid,
+                "io_direction": "upload",
+                "io_backend": "local_cache",
+                "io_seconds": cid_upload_seconds,
+                "payload_bytes": cid_upload_bytes,
+            }
+        )
+        loaded_payload, cid_download_seconds, cid_download_bytes = load_local_cid_payload(cid)
+        cid_io_rows.append(
+            {
+                "metric_type": "cid_io",
+                "phase": "discovery",
+                "cid_scope": "metadata",
+                "cid_role": role,
+                "cid": cid,
+                "io_direction": "download",
+                "io_backend": "local_cache",
+                "io_seconds": cid_download_seconds,
+                "payload_bytes": cid_download_bytes,
+            }
+        )
+        cid_roundtrip_ok = loaded_payload == metadata
+        case_assertions.append(
+            build_case_assertion(
+                case_id=f"discovery_cid_roundtrip_{role}",
+                capability_id="discovery.cid_roundtrip",
+                expected="CID payload roundtrip should equal metadata",
+                actual=(
+                    f"ok={cid_roundtrip_ok} "
+                    f"upload_s={cid_upload_seconds:.6f} download_s={cid_download_seconds:.6f} "
+                    f"bytes={cid_upload_bytes}"
+                ),
+                passed=cid_roundtrip_ok,
+                error="" if cid_roundtrip_ok else "CID roundtrip payload mismatch",
+            )
+        )
+        if not cid_roundtrip_ok:
+            raise AssertionError(f"CID roundtrip 校验失败: role={role}")
         emit_progress(f"准备注册/更新 {role}，cid={cid}")
 
         block_number, action = register_or_update_agent(
@@ -899,7 +1124,9 @@ def run_discovery_flow(
             actor_role=role,
             funder_info=master_info if isinstance(master_info, dict) else None,
             balance_reserve_eth=float(discovery_cfg.get("balance_reserve_eth", 0.002)),
+            case_id=f"discovery_register_update_{role}",
         )
+        state_tuple = registry.functions.agents(Web3.to_checksum_address(admin_addr)).call()
         block_numbers.append(block_number)
         action_flags.append(action)
         holders.append(
@@ -910,6 +1137,10 @@ def run_discovery_flow(
                 "cid": cid,
                 "query_text": query_keyword,
                 "port": holder_ports[idx],
+                "expected_init_score": int(state_tuple[2]),
+                "expected_accumulated_penalty": int(state_tuple[3]),
+                "expected_last_misconduct_ts": int(state_tuple[4]),
+                "expected_slashed": bool(state_tuple[6]),
             }
         )
         emit_progress(f"{role} 完成链上更新，block={block_number}")
@@ -918,6 +1149,7 @@ def run_discovery_flow(
     subgraph_ok = True
     poll_count = 0
     wait_seconds = 0.0
+    subgraph_seen: dict[str, dict[str, Any]] = {}
     selected_subgraph_url = str(
         key_config.get("subgraph_url")
         or "https://api.studio.thegraph.com/query/1740029/agent-registry-sepolia/version/latest"
@@ -946,7 +1178,7 @@ def run_discovery_flow(
         else:
             emit_progress("未探测到健康子图节点，进入轮询重试流程")
 
-        subgraph_ok, poll_count, wait_seconds = wait_subgraph_index(
+        subgraph_ok, poll_count, wait_seconds, subgraph_seen = wait_subgraph_index(
             subgraph_urls=healthy_urls if healthy_urls else subgraph_urls,
             headers=headers,
             expected_holders=holders,
@@ -961,7 +1193,7 @@ def run_discovery_flow(
         start_block = max(0, min(block_numbers) - 2)
     else:
         start_block = default_start_block
-    sync_rows, assert_rows = run_sidecar_assertion(
+    sync_rows, assert_rows, vector_summary_rows = run_sidecar_assertion(
         run_dir=run_dir,
         start_block=start_block,
         expected_holders=holders,
@@ -990,8 +1222,81 @@ def run_discovery_flow(
         metric = dict(row)
         metric["metric_type"] = "search_assertion"
         discovery_metrics.append(metric)
+    discovery_metrics.extend(cid_io_rows)
+    for row in vector_summary_rows:
+        metric = dict(row)
+        metric["metric_type"] = "vector_index_summary"
+        discovery_metrics.append(metric)
+
+    vector_query_values: list[float] = []
+    for row in assert_rows:
+        try:
+            value = float(row.get("vector_match_latency_ms", 0.0))
+        except (TypeError, ValueError):
+            value = -1.0
+        if value >= 0:
+            vector_query_values.append(value)
+    if assert_rows:
+        vector_timing_ok = len(vector_query_values) == len(assert_rows)
+        vector_avg_ms = sum(vector_query_values) / max(1, len(vector_query_values))
+        case_assertions.append(
+            build_case_assertion(
+                case_id="discovery_vector_match_timing_collected",
+                capability_id="discovery.vector_match_timing",
+                expected="all discovery queries contain vector_match_latency_ms",
+                actual=f"queries={len(assert_rows)} avg_vector_match_ms={vector_avg_ms:.4f}",
+                passed=vector_timing_ok,
+                error="" if vector_timing_ok else "missing vector timing field",
+            )
+        )
+
+    if bind_current:
+        for holder in holders:
+            did = str(holder["did"])
+            item = subgraph_seen.get(did, {})
+            expected = {
+                "cid": holder["cid"],
+                "initScore": int(holder["expected_init_score"]),
+                "accumulatedPenalty": int(holder["expected_accumulated_penalty"]),
+                "lastMisconductTimestamp": int(holder["expected_last_misconduct_ts"]),
+                "slashed": bool(holder["expected_slashed"]),
+                "isRegistered": True,
+            }
+            actual = {
+                "cid": str(item.get("cid", "")),
+                "initScore": int(item.get("initScore", 0) or 0),
+                "accumulatedPenalty": int(item.get("accumulatedPenalty", 0) or 0),
+                "lastMisconductTimestamp": int(item.get("lastMisconductTimestamp", 0) or 0),
+                "slashed": bool(item.get("slashed", False)),
+                "isRegistered": bool(item.get("isRegistered", False)),
+            }
+            passed = expected == actual
+            case_assertions.append(
+                build_case_assertion(
+                    case_id=f"discovery_subgraph_state_{holder['role']}",
+                    capability_id="discovery.subgraph_state_consistency",
+                    expected=json.dumps(expected, ensure_ascii=False, sort_keys=True),
+                    actual=json.dumps(actual, ensure_ascii=False, sort_keys=True),
+                    passed=passed,
+                    error="" if passed else "Subgraph 状态字段与链上预期不一致",
+                )
+            )
+            if not passed:
+                raise AssertionError(
+                    f"Subgraph 状态不一致: role={holder['role']} expected={expected} actual={actual}"
+                )
 
     for row in assert_rows:
+        case_assertions.append(
+            build_case_assertion(
+                case_id=f"discovery_sidecar_hit_{str(row.get('query_text', 'unknown'))}",
+                capability_id="discovery.sidecar_search_hit",
+                expected="found=true",
+                actual=f"found={bool(row.get('found'))}, rank={int(row.get('rank', -1))}",
+                passed=bool(row.get("found")),
+                error="" if bool(row.get("found")) else "Sidecar 未命中目标 Agent",
+            )
+        )
         if not bool(row["found"]):
             raise AssertionError(
                 f"Sidecar 检索未命中本次账户: query={row['query_text']} target={row['target_agent']}"
@@ -1001,4 +1306,6 @@ def run_discovery_flow(
         "holders": holders,
         "start_block": start_block,
         "discovery_metrics": discovery_metrics,
+        "case_assertions": case_assertions,
     }
+
