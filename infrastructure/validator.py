@@ -5,6 +5,7 @@ import time
 from web3 import Web3
 from eth_account.messages import encode_defunct
 from infrastructure.load_config import get_resolve_script_path, load_key_config
+from infrastructure.runtime_state import IssuerTrustRegistry
 
 # 尝试获取全局配置
 try:
@@ -19,17 +20,11 @@ except ImportError:
     get_rpc_url = lambda: (RPC_URL, conf)
 
 class DIDValidator:
-    def __init__(self):
+    def __init__(self, trust_registry: IssuerTrustRegistry | None = None):
         self.w3 = global_w3
         self.resolve_script = get_resolve_script_path()
         self.did_cache = {} # 内存缓存
-        
-        # 加载受信 Issuer
-        key_conf = load_key_config()
-        if "issuer" in key_conf["accounts"]:
-            self.trusted_issuers = [key_conf["accounts"]["issuer"]["address"].lower()]
-        else:
-            self.trusted_issuers = []
+        self.trust_registry = trust_registry
 
     def resolve_did(self, did):
         """调用 Node.js 解析 DID (包含重试机制)"""
@@ -220,12 +215,9 @@ class DIDValidator:
         if not isinstance(issuer_did, str) or not issuer_did:
             res["error"] = "issuer 缺失"
             return res
-        issuer_addr = issuer_did.split(":")[-1].lower() if ":" in issuer_did else ""
-        if issuer_addr not in self.trusted_issuers:
-             # 为了严格性，如果不在白名单则报错，或者仅警告
-             # res["error"] = f"Issuer {issuer_addr} 不在白名单"
-             # return res
-             pass
+        if not self.is_issuer_trusted(issuer_did):
+            res["error"] = f"Issuer 不受信任: {issuer_did}"
+            return res
 
         # Signature
         proof = vc.get("proof")
@@ -250,3 +242,16 @@ class DIDValidator:
             
         res["valid"] = True
         return res
+
+    def is_issuer_trusted(self, issuer_did: str) -> bool:
+        """
+        判断 issuer 是否受当前信任寄存认可。
+
+        当前默认策略：
+        - 未配置 trust registry 时，全部放行。
+        """
+        if not issuer_did:
+            return False
+        if self.trust_registry is None:
+            return True
+        return bool(self.trust_registry.is_trusted(issuer_did))

@@ -16,6 +16,11 @@ if root_dir not in sys.path:
 
 # === 引入 Infrastructure 和 Agent ===
 from infrastructure.wallet import IdentityWallet
+from infrastructure.runtime_state import (
+    IssuerTrustRegistry,
+    RuntimeStateManager,
+    resolve_runtime_db_path,
+)
 from infrastructure.validator import DIDValidator
 from agents.holder.definition import create_holder_agent
 
@@ -27,10 +32,14 @@ DATA_DIR = os.path.join(current_dir, "data")
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
+RUNTIME_DB_PATH = resolve_runtime_db_path(DATA_DIR)
+runtime_state = RuntimeStateManager(RUNTIME_DB_PATH)
+trust_registry = IssuerTrustRegistry(DATA_DIR)
+
 # === 全局变量占位 ===
 # 实际初始化将在 __main__ 中根据参数决定，或者在 import 时加载默认值
 wallet = None
-validator = DIDValidator()#DID验证器
+validator = DIDValidator(trust_registry=trust_registry)#DID验证器
 agent_app = None
 ROLE_NAME = "agent_a_op" # 默认值
 
@@ -47,6 +56,13 @@ def get_snapshot_hash(verifier_did):
     """
     对当前 verifier 对应的 memory 文件，算一个确定性的 SHA-256 哈希
     """
+    if wallet and wallet.did and verifier_did:
+        snapshot_hash, item_count = runtime_state.get_snapshot_hash(
+            owner_did=wallet.did,
+            peer_did=verifier_did,
+        )
+        if item_count > 0:
+            return snapshot_hash
     file_path = get_memory_file(verifier_did)
     if not os.path.exists(file_path):
         return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
@@ -59,22 +75,52 @@ def get_snapshot_hash(verifier_did):
     except Exception:
         return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
 
-def append_interaction(verifier_did, request_data, response_data):
+def append_interaction(verifier_did, request_data, response_data, stage="runtime", status="success"):
     """
-    把一次完整的“请求 + 响应”顺序追加到 memory 文件中
+    把一次完整的“请求 + 响应”追加到 SQLite。
+
+    兼容说明：
+    - 优先写 SQLite；
+    - 若 SQLite 写入异常，则退回旧 JSON 文件，避免原流程直接崩。
     """
+    try:
+        owner_did = wallet.did if wallet and wallet.did else ""
+        task_id = ""
+        if isinstance(request_data, dict):
+            task_id = str(
+                request_data.get("task_id")
+                or request_data.get("nonce")
+                or request_data.get("type")
+                or ""
+            )
+        runtime_state.append_interaction(
+            owner_did=owner_did,
+            peer_did=verifier_did,
+            caller_did=verifier_did,
+            target_did=owner_did,
+            request_data=request_data,
+            response_data=response_data,
+            stage=stage,
+            status=status,
+            task_id=task_id,
+            source="holder",
+        )
+        return
+    except Exception:
+        pass
+
     file_path = get_memory_file(verifier_did)
     memory_data = []
     if os.path.exists(file_path):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 memory_data = json.load(f)
-        except: memory_data = []
+        except Exception:
+            memory_data = []
     memory_data.append(request_data)
     memory_data.append(response_data)
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(memory_data, f, indent=2, ensure_ascii=False)
-    #print(f"[Memory] Interaction appended for {verifier_did}")
 
 def verify_incoming_json(json_data):
     """
@@ -207,7 +253,7 @@ def handle_auth():
             
             if "APPROVE" in decision_text:
                 vp, duration = wallet.create_vp(nonce)
-                append_interaction(verifier_did, data, vp)
+                append_interaction(verifier_did, data, vp, stage="auth", status="success")
                 return jsonify(vp)
             else:
                 return jsonify({"error": "Request rejected by Agent"}), 403
@@ -250,7 +296,7 @@ def handle_probe():
             }
             serialized = json.dumps(response_payload, sort_keys=True, separators=(',', ':'))
             response_payload["signature"] = wallet.sign_message(serialized)
-            append_interaction(verifier_did, data, response_payload)
+            append_interaction(verifier_did, data, response_payload, stage="probe", status="success")
             return jsonify(response_payload)
         except Exception as e:
             traceback.print_exc()
@@ -294,7 +340,7 @@ def handle_context_hash():
                 }
                 serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'))
                 payload["signature"] = wallet.sign_message(serialized)
-                append_interaction(verifier_did, data, payload)
+                append_interaction(verifier_did, data, payload, stage="context", status="success")
                 return jsonify(payload)
             else:
                 return jsonify({"error": "Rejected"}), 403
@@ -311,10 +357,13 @@ def reset_memory():
     data = request.json or {}
     verifier_did = data.get('verifier_did')
     if verifier_did:
+        if wallet and wallet.did:
+            runtime_state.reset_peer_history(owner_did=wallet.did, peer_did=verifier_did)
         f = get_memory_file(verifier_did)
         if os.path.exists(f):
             os.remove(f)
             return jsonify({"status": "cleared", "target": verifier_did})
+        return jsonify({"status": "cleared", "target": verifier_did})
     return jsonify({"status": "no_op"})
 
 if __name__ == '__main__':

@@ -74,6 +74,8 @@ agents/verifier/data/memory_did_ethr_sepolia_0x59dEBEf1A4eb1d46fA4410ca27445D5aC
 sidecar/data/sidecar_state.db
 # fullflow 运行目录默认不纳入版本控制（避免实验产物污染）
 fullflow_tests/results/
+# 多规模并发测试运行结果
+_experiments/result/
 # fullflow 运行时临时文件
 fullflow_tests/**/verification_runtime/
 fullflow_tests/**/verification_process_logs/

@@ -16,10 +16,8 @@
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 import time
 import unittest
-from pathlib import Path
 
 from sidecar.services.sync_orchestrator import SyncOrchestrator
 from sidecar.storage.sqlite_state import AgentState, SQLiteStateStore
@@ -50,10 +48,9 @@ class TestSyncContract(unittest.TestCase):
         """
         老库只有旧列时，init_db 能补齐新列并创建关键索引。
         """
-        with tempfile.TemporaryDirectory() as tmpdir:#真实临时目录
-            db_path = Path(tmpdir) / "legacy_state.db"
-            conn = sqlite3.connect(str(db_path))
-            conn.executescript(
+        store = SQLiteStateStore(":memory:")
+        try:
+            store._conn.executescript(
                 """
                 CREATE TABLE agent_state (
                     agent_address TEXT PRIMARY KEY,
@@ -76,17 +73,11 @@ class TestSyncContract(unittest.TestCase):
                 );
                 """
             )
-            conn.commit()
-            conn.close()
+            store._conn.commit()
 
-            store = SQLiteStateStore(db_path)
-            try:
-                store.init_db()
-            finally:
-                store.close()
+            store.init_db()
 
-            verify_conn = sqlite3.connect(str(db_path))
-            verify_conn.row_factory = sqlite3.Row
+            verify_conn = store._conn
             try:
                 columns = {
                     str(row["name"])
@@ -102,6 +93,7 @@ class TestSyncContract(unittest.TestCase):
                     "final_score",
                     "metadata_sha256",
                     "vector_text",
+                    "recent_7d_calls",
                 ):
                     self.assertIn(expected, columns)
 
@@ -113,8 +105,18 @@ class TestSyncContract(unittest.TestCase):
                 self.assertIn("idx_agent_state_final_score", index_names)
                 self.assertIn("idx_agent_state_last_event_block", index_names)
                 self.assertIn("idx_agent_state_metadata_cid", index_names)
+
+                receipt_tables = {
+                    str(row["name"])
+                    for row in verify_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                self.assertIn("interaction_receipt", receipt_tables)
             finally:
-                verify_conn.close()
+                pass
+        finally:
+            store.close()
 
     def test_upsert_idempotent_by_last_event_block(self) -> None:
         """
@@ -273,6 +275,47 @@ class TestSyncContract(unittest.TestCase):
             orchestrator._persist_states([state_new_cid])
             self.assertEqual(len(vector_index.upserts), 2)
             self.assertEqual(vector_index.upserts[-1]["metadata"]["metadata_cid"], "cid-2")
+        finally:
+            store.close()
+
+    def test_append_interaction_receipt_updates_recent_7d_calls(self) -> None:
+        """
+        追加交互记录后，agent_state.recent_7d_calls 会同步刷新。
+        """
+        store = SQLiteStateStore(":memory:")
+        try:
+            store.init_db()
+            state = AgentState(
+                agent_address="0x22",
+                did="did:target",
+                is_registered=True,
+                is_slashed=False,
+                last_event_block=1,
+            )
+            store.upsert_agent_state(state)
+
+            receipt_id = store.append_interaction_receipt(
+                owner_did="did:owner",
+                peer_did="did:peer",
+                caller_did="did:caller",
+                target_did="did:target",
+                request_data={"hello": "world"},
+                response_data={"ok": True},
+                stage="probe",
+                status="success",
+                source="test",
+            )
+            self.assertGreater(receipt_id, 0)
+
+            updated = store.get_agent_state("0x22")
+            self.assertIsNotNone(updated)
+            assert updated is not None
+            self.assertEqual(updated.recent_7d_calls, 1)
+
+            receipts = store.list_interaction_receipts(owner_did="did:owner", peer_did="did:peer")
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0].target_did, "did:target")
+            self.assertEqual(receipts[0].stage, "probe")
         finally:
             store.close()
 

@@ -18,6 +18,11 @@ if root_dir not in sys.path:
 
 # === 引入项目组件 ===
 from infrastructure.wallet import IdentityWallet
+from infrastructure.runtime_state import (
+    IssuerTrustRegistry,
+    RuntimeStateManager,
+    resolve_runtime_db_path,
+)
 from infrastructure.validator import DIDValidator
 from agents.verifier.definition import create_verifier_resources
 
@@ -30,7 +35,15 @@ class VerifierRuntime:
     Verifier 运行时核心逻辑封装。
     既可以单机运行，也可以被并发测试脚本调用。
     """
-    def __init__(self, role_name, config=None, instance_name=None, data_dir=None, target_holder_url="http://localhost:5000"):
+    def __init__(
+        self,
+        role_name,
+        config=None,
+        instance_name=None,
+        data_dir=None,
+        target_holder_url="http://localhost:5000",
+        state_db_path=None,
+    ):
         self.holder_api_url = target_holder_url # Holder API 地址
         self.role_name = role_name
         self.config = config  # 如果为 None，Wallet 会自动加载默认 key.json
@@ -42,6 +55,9 @@ class VerifierRuntime:
         self.data_dir = base_dir
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
+        self.state_db_path = str(state_db_path or resolve_runtime_db_path(self.data_dir))
+        self.runtime_state = RuntimeStateManager(self.state_db_path)
+        self.trust_registry = IssuerTrustRegistry(self.data_dir)
             
         self.probe_templates_file = os.path.join(self.data_dir, "probe_templates.json")
         self.probe_inputs_file = os.path.join(self.data_dir, "probe_inputs.json")
@@ -64,7 +80,7 @@ class VerifierRuntime:
         try:
             self.wallet = IdentityWallet(self.role_name, override_config=self.config)
             self.wallet.load_local_vcs(self.data_dir)
-            self.validator = DIDValidator()
+            self.validator = DIDValidator(trust_registry=self.trust_registry)
             # print(f"[{self.name}] Wallet Ready: {self.wallet.did}")
         except Exception as e:
             print(f"[{self.name}] [Fatal] Infrastructure init failed: {e}")
@@ -97,21 +113,46 @@ class VerifierRuntime:
         
         return os.path.join(self.data_dir, filename)
 
-    def _append_interaction(self, target_did, req, res):
+    def _append_interaction(self, target_did, req, res, stage="runtime", status="success"):
         """
-        把每一次的完整对话存进来
+        把每一次的完整对话存进 SQLite。
+
+        兼容说明：
+        - 优先写 SQLite；
+        - SQLite 异常时退回旧 JSON 文件，避免中断原流程。
         """
+        try:
+            task_id = ""
+            if isinstance(req, dict):
+                task_id = str(req.get("task_id") or req.get("nonce") or req.get("type") or "")
+            self.runtime_state.append_interaction(
+                owner_did=self.wallet.did if self.wallet and self.wallet.did else "",
+                peer_did=target_did,
+                caller_did=self.wallet.did if self.wallet and self.wallet.did else "",
+                target_did=target_did,
+                request_data=req,
+                response_data=res,
+                stage=str(stage or "runtime").strip().lower(),
+                status=str(status or "success").strip(),
+                task_id=task_id,
+                source="verifier",
+            )
+            return
+        except Exception:
+            pass
+
         file_path = self._get_memory_file(target_did)
         existing_data = []
         if os.path.exists(file_path):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     existing_data = json.load(f)
-            except: pass
-        
+            except Exception:
+                pass
+
         existing_data.append(req)
         existing_data.append(res)
-        
+
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(existing_data, f, indent=2, ensure_ascii=False)
 
@@ -119,6 +160,12 @@ class VerifierRuntime:
         """
         获取验证方存的记录哈希
         """
+        snapshot_hash, item_count = self.runtime_state.get_snapshot_hash(
+            owner_did=self.wallet.did if self.wallet and self.wallet.did else "",
+            peer_did=target_did,
+        )
+        if item_count > 0:
+            return snapshot_hash
         file_path = self._get_memory_file(target_did)
         if not os.path.exists(file_path):
             return hashlib.sha256(json.dumps([]).encode('utf-8')).hexdigest()
@@ -340,7 +387,7 @@ class VerifierRuntime:
             is_valid, reason = self.validator.verify_vp(vp, nonce)#验证vp
             holder_did = vp.get("holder", {}).get("id") if isinstance(vp.get("holder"), dict) else vp.get("holder")
             
-            self._append_interaction(holder_did, req, vp)
+            self._append_interaction(holder_did, req, vp, stage="auth", status="success")
             t_verify = time.time()
             
             if is_valid:
@@ -369,7 +416,7 @@ class VerifierRuntime:
             
             data = resp.json()
             result_text = data.get("execution_result", "")
-            self._append_interaction(holder_did, payload, data)
+            self._append_interaction(holder_did, payload, data, stage="probe", status="success")
             
 
             #下面这个是处理的现有的一种模板,可拓展
@@ -424,7 +471,7 @@ class VerifierRuntime:
             data = resp.json()
             remote_hash = data.get("context_hash")
             local_hash = self._get_local_snapshot_hash(holder_did)
-            self._append_interaction(holder_did, req, data)
+            self._append_interaction(holder_did, req, data, stage="context", status="success")
             
             match = (remote_hash == local_hash)
             msg = "Match" if match else f"Mismatch (L:{local_hash[:6]} R:{remote_hash[:6]})"

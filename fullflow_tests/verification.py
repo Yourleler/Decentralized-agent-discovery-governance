@@ -70,7 +70,12 @@ def build_case_assertion(
     }
 
 
-def spawn_process(command: list[str], cwd: Path, log_path: Path | None = None) -> subprocess.Popen:
+def spawn_process(
+    command: list[str],
+    cwd: Path,
+    log_path: Path | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.Popen:
     """
     功能：
     启动一个子进程并返回进程对象，可选将输出写入日志文件。
@@ -85,6 +90,8 @@ def spawn_process(command: list[str], cwd: Path, log_path: Path | None = None) -
     """
     env = dict(os.environ)
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    if env_overrides:
+        env.update({str(k): str(v) for k, v in env_overrides.items()})
     stdout_target: Any = subprocess.DEVNULL
     stderr_target: Any = subprocess.DEVNULL
     log_handle = None
@@ -775,6 +782,7 @@ def run_verification_flow(
     process_log_dir = run_dir / "verification_process_logs"
     process_log_dir.mkdir(parents=True, exist_ok=True)
     runtime_pool: dict[str, VerifierRuntime] = {}
+    shared_state_db_path = run_dir / "discovery_sidecar_state.db"
 
     project_root = Path(".").resolve()
 
@@ -813,6 +821,7 @@ def run_verification_flow(
                 ],
                 cwd=project_root,
                 log_path=holder_log,
+                env_overrides={"AGENT_RUNTIME_DB_PATH": str(shared_state_db_path)},
             )
             processes.append(proc)
             holder_wait_items.append((port, role, proc, holder_log))
@@ -843,6 +852,7 @@ def run_verification_flow(
                 instance_name=pair_name,
                 data_dir=str(pair_runtime_dir),
                 target_holder_url=holder_url,
+                state_db_path=str(shared_state_db_path),
             )
 
         emit_progress("预清理 Holder 记忆，避免历史数据影响 context 校验")
