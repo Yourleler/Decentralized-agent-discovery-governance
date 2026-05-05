@@ -11,6 +11,7 @@ import time
 
 from fullflow_tests.discovery import run_discovery_flow
 from fullflow_tests.governance import run_governance_flow
+from fullflow_tests.mcp_interop import run_mcp_interop_flow
 from fullflow_tests.provision import ensure_accounts
 from fullflow_tests.reporting import write_reports
 from fullflow_tests.verification import run_verification_flow
@@ -216,11 +217,13 @@ def run_fullflow(config: dict[str, Any]) -> dict[str, Any]:
     phase_metrics: list[dict[str, Any]] = []
     discovery_metrics: list[dict[str, Any]] = []
     governance_metrics: list[dict[str, Any]] = []
+    mcp_metrics: list[dict[str, Any]] = []
     case_assertions: list[dict[str, Any]] = []
 
     provision_result: dict[str, Any] = {}
     discovery_result: dict[str, Any] = {}
     verification_result: dict[str, Any] = {}
+    mcp_interop_result: dict[str, Any] = {}
     governance_result: dict[str, Any] = {}
 
     try:
@@ -260,6 +263,15 @@ def run_fullflow(config: dict[str, Any]) -> dict[str, Any]:
         case_assertions.extend(verification_result.get("case_assertions", []))
         emit_progress("VERIFICATION", "验证闭环完成")
 
+        emit_progress("MCP_INTEROP", "开始 MCP 互操作测试")
+        mcp_interop_result = run_mcp_interop_flow(
+            config=runtime_config,
+            run_dir=run_dir,
+        )
+        mcp_metrics.extend(mcp_interop_result.get("mcp_metrics", []))
+        case_assertions.extend(mcp_interop_result.get("case_assertions", []))
+        emit_progress("MCP_INTEROP", f"MCP 互操作测试完成，状态={mcp_interop_result.get('status')}")
+
         emit_progress("GOVERNANCE", "开始治理闭环")
         governance_result = run_governance_flow(
             config=runtime_config,
@@ -287,6 +299,7 @@ def run_fullflow(config: dict[str, Any]) -> dict[str, Any]:
         raw_metrics["provision"] = sanitize_sensitive_data(provision_result)
         raw_metrics["discovery"] = sanitize_sensitive_data(discovery_result)
         raw_metrics["verification"] = sanitize_sensitive_data(verification_result)
+        raw_metrics["mcp_interop"] = sanitize_sensitive_data(mcp_interop_result)
         raw_metrics["governance"] = sanitize_sensitive_data(governance_result)
         raw_metrics["case_assertions"] = sanitize_sensitive_data(case_assertions)
 
@@ -300,6 +313,7 @@ def run_fullflow(config: dict[str, Any]) -> dict[str, Any]:
             raw_metrics=raw_metrics,
             usd_per_eth=float(runtime_config.get("reporting", {}).get("usd_per_eth", 2930.0)),
             reporting_config=dict(runtime_config.get("reporting", {})),
+            mcp_metrics=mcp_metrics,
         )
         emit_progress("REPORT", f"报表已生成: {run_dir}")
 

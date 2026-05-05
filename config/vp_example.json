@@ -1,4 +1,4 @@
-{
+﻿{
   "@context": [
     "https://www.w3.org/2018/credentials/v1"
   ],
@@ -11,6 +11,14 @@
     "adminAddress": "0xYourAdminAddress",
     "opAddress": "0xYourOpAddress1",
     "opKid": "did:ethr:sepolia:0xYourAdminAddress#delegate"
+  },
+  "session": {
+    "requestId": "req-2026-04-11-001",
+    "timestamp": "2026-04-11T10:00:00Z",
+    "resource": "urn:dagg:holder:auth",
+    "action": "authenticate",
+    "authorizationDetailsHash": "sha256-of-authorization-details",
+    "verifierDid": "did:ethr:sepolia:0xVerifierAddress"
   },
   "verifiableCredential": [
     {
@@ -36,11 +44,53 @@
         "proofPurpose": "assertionMethod",
         "jws": "0xissuer-signature"
       }
+    },
+    {
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2",
+        "https://schema.org"
+      ],
+      "type": [
+        "VerifiableCredential",
+        "AgentToolsetCredential"
+      ],
+      "issuer": "did:ethr:sepolia:0xIssuerAddress",
+      "validFrom": "2026-03-01T10:00:00Z",
+      "validUntil": "2027-03-01T10:00:00Z",
+      "credentialSubject": {
+        "id": "did:ethr:sepolia:0xYourAdminAddress",
+        "toolManifest": [
+          {
+            "name": "Search Tool",
+            "identifier": "tool.web.search",
+            "providerProtocol": "mcp",
+            "serverId": "demo-search",
+            "serverEndpoint": "http://localhost:9300/mcp",
+            "allowedActions": [
+              "query"
+            ],
+            "allowedResources": [
+              "resource:web.search:*"
+            ],
+            "permissions": "external-read",
+            "rateLimit": "60/min",
+            "riskLevel": "medium",
+            "operationalStatus": "active"
+          }
+        ]
+      },
+      "proof": {
+        "type": "EcdsaSecp256k1Signature2019",
+        "created": "2026-03-01T10:00:00Z",
+        "verificationMethod": "did:ethr:sepolia:0xIssuerAddress#controller",
+        "proofPurpose": "assertionMethod",
+        "jws": "0xissuer-signature"
+      }
     }
   ],
   "proof": {
     "type": "EcdsaSecp256k1RecoverySignature2020",
-    "created": "2026-03-01T10:00:01Z",
+    "created": "2026-04-11T10:00:01Z",
     "verificationMethod": "did:ethr:sepolia:0xYourAdminAddress#delegate",
     "proofPurpose": "authentication",
     "challenge": "nonce-from-verifier",

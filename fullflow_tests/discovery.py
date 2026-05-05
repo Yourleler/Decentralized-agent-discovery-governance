@@ -873,6 +873,7 @@ def run_sidecar_assertion(
     first: int,
     max_pages: int,
     max_rounds: int,
+    search_top_k: int,
     subgraph_url_override: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """
@@ -886,6 +887,7 @@ def run_sidecar_assertion(
     first (int): 同步分页大小。
     max_pages (int): 单轮最大分页。
     max_rounds (int): 最大同步轮次。
+    search_top_k (int): 检索断言的 top_k。
     subgraph_url_override (str | None): Sidecar 同步使用的 Subgraph URL 覆盖值。
 
     返回值：
@@ -962,7 +964,7 @@ def run_sidecar_assertion(
             target_address = str(holder["admin_address"]).lower()
             emit_progress(f"执行检索断言: query={query_text}")
             query_started = time.time()
-            results = discovery_service.search(query=query_text, top_k=5)
+            results = discovery_service.search(query=query_text, top_k=max(1, int(search_top_k)))
             query_ms = (time.time() - query_started) * 1000
 
             found = False
@@ -1051,7 +1053,8 @@ def run_discovery_flow(
             raise ValueError(f"发现阶段缺少角色账户: {role}")
         admin_addr = str(admin["address"])
         did = to_did(admin_addr)
-        query_keyword = f"fullflow-keyword-{role}"
+        addr_suffix = admin_addr.lower().replace("0x", "")[-8:]
+        query_keyword = f"fullflow-keyword-{role}-{addr_suffix}"
         metadata = generate_agent_metadata(
             agent_did=did,
             admin_address=admin_addr,
@@ -1200,6 +1203,7 @@ def run_discovery_flow(
         first=int(discovery_cfg.get("sidecar_first", 200)),
         max_pages=int(discovery_cfg.get("sidecar_max_pages", 50)),
         max_rounds=int(discovery_cfg.get("sidecar_max_rounds", 10)),
+        search_top_k=int(discovery_cfg.get("sidecar_search_top_k", 20)),
         subgraph_url_override=selected_subgraph_url,
     )
 

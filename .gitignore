@@ -56,6 +56,8 @@ private-folder-alias.json
 agents_4_key1.json
 data/setup_verifiers.csv
 paper.md
+paper/
+paper 修改前- 副本/
 融合版Agent发现与治理架构总结v2.md
 .agent/rules/learn.md
 合约AgentRegistry_v1.0.txt
@@ -66,12 +68,18 @@ sidecar/data/*.db-wal
 sidecar/data/chroma/
 .agent/workflows/zhushi.md
 AGENTS.md
+CLAUDE.md
+.claude/
 reference/registry_base.py
 reference/capability_discovery.py
 _demo_2v2/data/
 agents/holder/data/
+agents/verifier/data/*.db
+agents/verifier/data/*.db-shm
+agents/verifier/data/*.db-wal
 agents/verifier/data/memory_did_ethr_sepolia_0x59dEBEf1A4eb1d46fA4410ca27445D5aCB4313b1_to_did_ethr_sepolia_0x4791364B14574fF69520F1AAD8bb7192Eeea2ffF.json
 sidecar/data/sidecar_state.db
+config/mcp_servers.json
 # fullflow 运行目录默认不纳入版本控制（避免实验产物污染）
 fullflow_tests/results/
 # 多规模并发测试运行结果
@@ -83,3 +91,11 @@ fullflow_tests/**/*.snapshot.json
 fullflow_tests/**/*.db
 fullflow_tests/**/*.db-shm
 fullflow_tests/**/*.db-wal
+
+# 缓存目录
+.global_did_cache/
+复试用_架构完整说明.md
+目前毕设情况.md
+A2A_MCP轻量兼容改造详细说明.md
+复试用_架构完整说明.md
+目前毕设情况.md

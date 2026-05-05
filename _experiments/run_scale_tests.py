@@ -1,8 +1,10 @@
 """
 多规模并发测试自动化脚本。
 
-用途：按顺序运行多个规模（如 1v1, 3v3, 5v5, 10v10）的 P2P 认证压测，
-汇总为对比 CSV + 规模分析图表，用于论文中"不同规模下的响应延迟与互操作性"章节。
+用途：按顺序运行多个规模（如 1v1, 3v3, 5v5, 10v10）的联动压测：
+  1) P2P 认证性能压测（Auth/Probe/Context）
+  2) A2A + MCP 并发越权请求压测（非法 action / 非法 resource）
+汇总为对比 CSV + 规模分析图表，用于论文中“不同规模下的响应延迟与互操作性/安全性”章节。
 
 前置条件：
   1. 已通过 setup_agents_N.py 生成目标规模的账户（verifiers_key.json / holders_key.json）
@@ -13,6 +15,7 @@
 
 说明：
   - 每个规模会先启动对应数量的 Holder，再启动对应数量的 Verifier 并发测试
+  - Verifier 测试结束后，会在同一规模下并发发起 MCP 越权请求压测
   - 每个规模完成后收集指标并清理进程
   - 最终输出对比报表
 """
@@ -25,7 +28,11 @@ import time
 import subprocess
 import signal
 import multiprocessing
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+import requests
 
 # 定位项目根目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,9 +46,29 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from agents.verifier.runtime import VerifierRuntime
+from infrastructure.wallet import IdentityWallet
+from interop.request_policy import (
+    build_authorization_details,
+    build_request_signature_payload,
+    with_request_envelope,
+)
 
 # === 测试规模配置 ===
 SCALE_TARGETS = [1, 3, 5, 10]  # 并发对数
+MCP_ABUSE_CASES = [
+    {
+        "case_id": "mcp_unauthorized_action",
+        "resource": "resource:time:current",
+        "action": "execute",
+        "description": "合法工具 + 非法动作 execute，应被 403 拒绝",
+    },
+    {
+        "case_id": "mcp_unauthorized_resource",
+        "resource": "resource:system:admin",
+        "action": "query",
+        "description": "合法动作 + 非法资源，应被 403 拒绝",
+    },
+]
 
 # === 路径 ===
 VERIFIERS_KEY_PATH = os.path.join(project_root, "data", "verifiers_key.json")
@@ -122,6 +149,156 @@ def run_verifier_worker(name, config, role_name, stats_queue, barrier, target_ur
         print(f"  [{name}] 异常: {e}")
 
 
+def _build_mcp_abuse_payload(
+    *,
+    holder_port: int,
+    wallet: IdentityWallet,
+    case_cfg: dict,
+) -> tuple[dict, str]:
+    """
+    构造 A2A + MCP 越权请求体并完成签名。
+
+    参数：
+      holder_port: 目标 Holder 端口
+      wallet: 发起请求的钱包
+      case_cfg: 越权场景配置（resource/action/case_id）
+
+    返回：
+      (signed_payload, target_uri)
+    """
+    holder_url = f"http://localhost:{holder_port}"
+    target_uri = f"{holder_url}/a2a/message/send"
+    auth_details = build_authorization_details(
+        detail_type="tool-execution",
+        actions=[str(case_cfg.get("action", "")).strip()],
+        locations=[holder_url],
+        datatypes=["tool-call"],
+        identifier=str(case_cfg.get("case_id", "mcp-abuse")),
+        privileges=["tool"],
+    )
+    payload = with_request_envelope(
+        {
+            "senderDid": wallet.did,
+            "message": f"abuse_case={case_cfg.get('case_id', '')}",
+            "toolCall": {
+                "providerProtocol": "mcp",
+                "serverId": "official-time",
+                "toolName": "get_current_time",
+                "arguments": {"timezone": "Asia/Shanghai"},
+            },
+        },
+        resource=str(case_cfg.get("resource", "")).strip(),
+        action=str(case_cfg.get("action", "")).strip(),
+        request_id=str(uuid.uuid4()),
+        authorization_details=auth_details,
+    )
+    signed_payload = dict(payload)
+    serialized = build_request_signature_payload(
+        payload,
+        http_method="POST",
+        target_uri=target_uri,
+    )
+    signed_payload["senderSignature"] = wallet.sign_message(serialized)
+    return signed_payload, target_uri
+
+
+def _run_single_mcp_abuse_case(
+    *,
+    scale: int,
+    holder_port: int,
+    verifier_role: str,
+    key_config: dict,
+    case_cfg: dict,
+) -> dict:
+    """
+    执行单条 MCP 越权请求并记录结果。
+    """
+    t0 = time.perf_counter()
+    row = {
+        "scale": scale,
+        "holder_port": holder_port,
+        "verifier_role": verifier_role,
+        "case_id": str(case_cfg.get("case_id", "")),
+        "resource": str(case_cfg.get("resource", "")),
+        "action": str(case_cfg.get("action", "")),
+        "expected_http_status": 403,
+        "actual_http_status": 0,
+        "latency_seconds": 0.0,
+        "passed": False,
+        "error": "",
+    }
+    try:
+        wallet = IdentityWallet(verifier_role, override_config=key_config)
+        payload, target_uri = _build_mcp_abuse_payload(
+            holder_port=holder_port,
+            wallet=wallet,
+            case_cfg=case_cfg,
+        )
+        resp = requests.post(target_uri, json=payload, timeout=30)
+        elapsed = time.perf_counter() - t0
+        row["latency_seconds"] = round(elapsed, 6)
+        row["actual_http_status"] = int(resp.status_code)
+        denied = resp.status_code == 403
+        row["passed"] = bool(denied)
+        if not denied:
+            row["error"] = f"期望403，实际{resp.status_code}"
+    except Exception as exc:
+        elapsed = time.perf_counter() - t0
+        row["latency_seconds"] = round(elapsed, 6)
+        row["error"] = str(exc)
+        row["passed"] = False
+    return row
+
+
+def run_mcp_abuse_stress(num_pairs: int, verifier_roles: list, verifier_config: dict) -> tuple[list, dict]:
+    """
+    执行“多规模 + MCP 并发越权”联动压测。
+
+    参数：
+      num_pairs: 当前规模
+      verifier_roles: 本规模使用的 verifier 角色列表
+      verifier_config: verifier 密钥配置
+
+    返回：
+      (rows, summary)
+    """
+    rows = []
+    futures = []
+    max_workers = max(1, num_pairs * max(1, len(MCP_ABUSE_CASES)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for i, role in enumerate(verifier_roles):
+            holder_port = 5000 + i
+            for case_cfg in MCP_ABUSE_CASES:
+                futures.append(
+                    pool.submit(
+                        _run_single_mcp_abuse_case,
+                        scale=num_pairs,
+                        holder_port=holder_port,
+                        verifier_role=role,
+                        key_config=verifier_config,
+                        case_cfg=case_cfg,
+                    )
+                )
+        for fut in as_completed(futures):
+            rows.append(fut.result())
+
+    valid_rows = [r for r in rows if r.get("latency_seconds", 0) > 0]
+    total = len(rows)
+    passed = sum(1 for r in rows if r.get("passed"))
+    pass_rate = (passed / total) if total > 0 else 0.0
+    avg_latency = sum(r["latency_seconds"] for r in valid_rows) / len(valid_rows) if valid_rows else 0.0
+    max_latency = max((r["latency_seconds"] for r in valid_rows), default=0.0)
+
+    summary = {
+        "mcp_abuse_total": total,
+        "mcp_abuse_passed": passed,
+        "mcp_abuse_pass_rate": round(pass_rate, 4),
+        "mcp_abuse_avg_latency": round(avg_latency, 6),
+        "mcp_abuse_max_latency": round(max_latency, 6),
+    }
+    return rows, summary
+
+
 def run_scale_test(num_pairs: int) -> dict:
     """
     执行单次规模测试。
@@ -170,7 +347,7 @@ def run_scale_test(num_pairs: int) -> dict:
 
     while collected < num_pairs:
         if time.time() - start_wait > 300:
-            print(f"  ⚠️ 超时！已收集 {collected}/{num_pairs}")
+            print(f"  [WARN] 超时！已收集 {collected}/{num_pairs}")
             break
         try:
             data = stats_queue.get(timeout=10)
@@ -180,11 +357,41 @@ def run_scale_test(num_pairs: int) -> dict:
         except Exception:
             pass
 
-    # 5. 清理
+    # 5. 先清理 Verifier，再执行 MCP 越权联动压测，最后清理 Holder
     for p in verifier_procs:
         if p.is_alive():
             p.terminate()
         p.join(timeout=5)
+
+    mcp_abuse_rows, mcp_abuse_summary = run_mcp_abuse_stress(
+        num_pairs=num_pairs,
+        verifier_roles=verifier_roles,
+        verifier_config=verifier_config,
+    )
+    abuse_csv = os.path.join(RESULT_DIR, f"mcp_abuse_{num_pairs}v{num_pairs}.csv")
+    abuse_fields = [
+        "scale",
+        "holder_port",
+        "verifier_role",
+        "case_id",
+        "resource",
+        "action",
+        "expected_http_status",
+        "actual_http_status",
+        "latency_seconds",
+        "passed",
+        "error",
+    ]
+    try:
+        with open(abuse_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=abuse_fields)
+            writer.writeheader()
+            writer.writerows(mcp_abuse_rows)
+        print(f"  [OK] MCP 越权联动数据: {abuse_csv}")
+    except Exception as e:
+        print(f"  [ERR] MCP 越权联动数据保存失败: {e}")
+
+    stop_processes(holder_procs)
     stop_processes(holder_procs)
 
     # 6. 计算统计指标
@@ -194,6 +401,11 @@ def run_scale_test(num_pairs: int) -> dict:
             "count": 0,
             "avg_t4": 0, "avg_t8": 0, "avg_t12": 0, "avg_total": 0,
             "max_total": 0, "tps": 0,
+            "mcp_abuse_total": mcp_abuse_summary.get("mcp_abuse_total", 0),
+            "mcp_abuse_passed": mcp_abuse_summary.get("mcp_abuse_passed", 0),
+            "mcp_abuse_pass_rate": mcp_abuse_summary.get("mcp_abuse_pass_rate", 0),
+            "mcp_abuse_avg_latency": mcp_abuse_summary.get("mcp_abuse_avg_latency", 0),
+            "mcp_abuse_max_latency": mcp_abuse_summary.get("mcp_abuse_max_latency", 0),
         }
 
     for row in results:
@@ -210,6 +422,11 @@ def run_scale_test(num_pairs: int) -> dict:
             "count": 0,
             "avg_t4": 0, "avg_t8": 0, "avg_t12": 0, "avg_total": 0,
             "max_total": 0, "tps": 0,
+            "mcp_abuse_total": mcp_abuse_summary.get("mcp_abuse_total", 0),
+            "mcp_abuse_passed": mcp_abuse_summary.get("mcp_abuse_passed", 0),
+            "mcp_abuse_pass_rate": mcp_abuse_summary.get("mcp_abuse_pass_rate", 0),
+            "mcp_abuse_avg_latency": mcp_abuse_summary.get("mcp_abuse_avg_latency", 0),
+            "mcp_abuse_max_latency": mcp_abuse_summary.get("mcp_abuse_max_latency", 0),
         }
 
     avg_t4 = sum(r.get("T4", 0) for r in valid) / count
@@ -237,9 +454,9 @@ def run_scale_test(num_pairs: int) -> dict:
                     for k, v in row.items()
                 }
                 writer.writerow(formatted)
-        print(f"  ✅ 原始数据: {scale_csv}")
+        print(f"  [OK] 原始数据: {scale_csv}")
     except Exception as e:
-        print(f"  ❌ 保存失败: {e}")
+        print(f"  [ERR] 保存失败: {e}")
 
     metric = {
         "scale": num_pairs,
@@ -250,8 +467,17 @@ def run_scale_test(num_pairs: int) -> dict:
         "avg_total": round(avg_total, 4),
         "max_total": round(max_total, 4),
         "tps": round(tps, 4),
+        "mcp_abuse_total": mcp_abuse_summary.get("mcp_abuse_total", 0),
+        "mcp_abuse_passed": mcp_abuse_summary.get("mcp_abuse_passed", 0),
+        "mcp_abuse_pass_rate": mcp_abuse_summary.get("mcp_abuse_pass_rate", 0),
+        "mcp_abuse_avg_latency": mcp_abuse_summary.get("mcp_abuse_avg_latency", 0),
+        "mcp_abuse_max_latency": mcp_abuse_summary.get("mcp_abuse_max_latency", 0),
     }
-    print(f"  📊 规模={num_pairs}, TPS={tps:.4f}, Avg={avg_total:.4f}s, Max={max_total:.4f}s")
+    print(
+        f"  [METRIC] 规模={num_pairs}, TPS={tps:.4f}, Avg={avg_total:.4f}s, Max={max_total:.4f}s, "
+        f"MCP越权拦截={metric['mcp_abuse_passed']}/{metric['mcp_abuse_total']} "
+        f"({metric['mcp_abuse_pass_rate']*100:.1f}%)"
+    )
     return metric
 
 
@@ -272,9 +498,11 @@ def generate_comparison_chart(metrics: list):
         t4_vals = [m["avg_t4"] for m in metrics if m["count"] > 0]
         t8_vals = [m["avg_t8"] for m in metrics if m["count"] > 0]
         t12_vals = [m["avg_t12"] for m in metrics if m["count"] > 0]
+        mcp_abuse_pass_rate_vals = [float(m.get("mcp_abuse_pass_rate", 0.0)) * 100.0 for m in metrics if m["count"] > 0]
+        mcp_abuse_latency_vals = [float(m.get("mcp_abuse_avg_latency", 0.0)) for m in metrics if m["count"] > 0]
 
         if not scales:
-            print("  ⚠️ 无有效数据，跳过绘图")
+            print("  [WARN] 无有效数据，跳过绘图")
             return
 
         scale_labels = [f"{s}v{s}" for s in scales]
@@ -320,11 +548,36 @@ def generate_comparison_chart(metrics: list):
         fig3.savefig(os.path.join(RESULT_DIR, "chart_scale_trend.png"), dpi=160)
         plt.close(fig3)
 
-        print(f"  ✅ 图表已保存到 {RESULT_DIR}/chart_scale_*.png")
+        # 图4: MCP 越权拦截通过率 vs 规模
+        fig4, ax4 = plt.subplots(figsize=(8, 5), constrained_layout=True)
+        bars = ax4.bar(scale_labels, mcp_abuse_pass_rate_vals, color="#55A868", width=0.5)
+        ax4.set_title("不同规模下 MCP 越权拦截通过率")
+        ax4.set_xlabel("并发规模")
+        ax4.set_ylabel("通过率 (%)")
+        ax4.set_ylim(0, 100)
+        for bar, val in zip(bars, mcp_abuse_pass_rate_vals):
+            ax4.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                     f"{val:.1f}%", ha="center", va="bottom", fontsize=10)
+        fig4.savefig(os.path.join(RESULT_DIR, "chart_scale_mcp_abuse_passrate.png"), dpi=160)
+        plt.close(fig4)
+
+        # 图5: MCP 越权请求平均延迟 vs 规模
+        fig5, ax5 = plt.subplots(figsize=(8, 5), constrained_layout=True)
+        ax5.plot(scale_labels, mcp_abuse_latency_vals, marker="o", linewidth=2, color="#C44E52")
+        ax5.set_title("不同规模下 MCP 越权请求平均延迟")
+        ax5.set_xlabel("并发规模")
+        ax5.set_ylabel("平均延迟 (秒)")
+        for i, val in enumerate(mcp_abuse_latency_vals):
+            ax5.annotate(f"{val:.3f}s", (scale_labels[i], val),
+                         textcoords="offset points", xytext=(0, 10), ha="center")
+        fig5.savefig(os.path.join(RESULT_DIR, "chart_scale_mcp_abuse_latency.png"), dpi=160)
+        plt.close(fig5)
+
+        print(f"  [OK] 图表已保存到 {RESULT_DIR}/chart_scale_*.png")
     except ImportError:
-        print("  ⚠️ matplotlib 不可用，跳过图表生成")
+        print("  [WARN] matplotlib 不可用，跳过图表生成")
     except Exception as e:
-        print(f"  ❌ 图表生成失败: {e}")
+        print(f"  [ERR] 图表生成失败: {e}")
 
 
 def main():
@@ -338,7 +591,7 @@ def main():
     # 检查密钥文件
     for path in [VERIFIERS_KEY_PATH, HOLDERS_KEY_PATH]:
         if not os.path.exists(path):
-            print(f"❌ 密钥文件不存在: {path}")
+            print(f"[ERR] 密钥文件不存在: {path}")
             print("请先运行 setup_agents_N.py 生成足够数量的账户")
             sys.exit(1)
 
@@ -355,7 +608,7 @@ def main():
     # 过滤超出能力范围的规模
     actual_targets = [s for s in SCALE_TARGETS if s <= max_possible]
     if not actual_targets:
-        print("❌ 无可运行的规模目标")
+        print("[ERR] 无可运行的规模目标")
         sys.exit(1)
 
     # 逐规模运行
@@ -365,39 +618,59 @@ def main():
             metric = run_scale_test(scale)
             all_metrics.append(metric)
         except Exception as e:
-            print(f"  ❌ 规模 {scale} 测试异常: {e}")
+            print(f"  [ERR] 规模 {scale} 测试异常: {e}")
             all_metrics.append({"scale": scale, "count": 0, "avg_t4": 0,
                                 "avg_t8": 0, "avg_t12": 0, "avg_total": 0,
-                                "max_total": 0, "tps": 0})
+                                "max_total": 0, "tps": 0,
+                                "mcp_abuse_total": 0, "mcp_abuse_passed": 0,
+                                "mcp_abuse_pass_rate": 0, "mcp_abuse_avg_latency": 0,
+                                "mcp_abuse_max_latency": 0})
         # 规模间休息
         time.sleep(3)
 
     # 写入对比 CSV
-    fieldnames = ["scale", "count", "avg_t4", "avg_t8", "avg_t12", "avg_total", "max_total", "tps"]
+    fieldnames = [
+        "scale", "count", "avg_t4", "avg_t8", "avg_t12", "avg_total", "max_total", "tps",
+        "mcp_abuse_total", "mcp_abuse_passed", "mcp_abuse_pass_rate",
+        "mcp_abuse_avg_latency", "mcp_abuse_max_latency",
+    ]
     try:
         with open(SCALE_CSV_PATH, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(all_metrics)
-        print(f"\n✅ 对比报表: {SCALE_CSV_PATH}")
+        print(f"\n[OK] 对比报表: {SCALE_CSV_PATH}")
     except Exception as e:
-        print(f"❌ 保存对比报表失败: {e}")
+        print(f"[ERR] 保存对比报表失败: {e}")
 
     # 生成对比图表
     generate_comparison_chart(all_metrics)
 
     # 打印汇总
-    print(f"\n{'='*80}")
-    print(f"{'规模':<10} | {'成功数':<8} | {'Avg T4(s)':<12} | {'Avg T8(s)':<12} | {'Avg T12(s)':<12} | {'Avg Total(s)':<14} | {'TPS':<8}")
-    print("-" * 80)
+    print(f"\n{'='*118}")
+    print(
+        f"{'规模':<10} | {'成功数':<8} | {'Avg T4(s)':<12} | {'Avg T8(s)':<12} | {'Avg T12(s)':<12} | "
+        f"{'Avg Total(s)':<14} | {'TPS':<8} | {'MCP拦截':<12} | {'MCP均延迟(s)':<13}"
+    )
+    print("-" * 118)
     for m in all_metrics:
-        print(f"{m['scale']}v{m['scale']:<7} | {m['count']:<8} | {m['avg_t4']:<12} | {m['avg_t8']:<12} | {m['avg_t12']:<12} | {m['avg_total']:<14} | {m['tps']:<8}")
-    print("=" * 80)
+        mcp_ratio = (
+            f"{int(m.get('mcp_abuse_passed', 0))}/{int(m.get('mcp_abuse_total', 0))}"
+            if int(m.get("mcp_abuse_total", 0)) > 0
+            else "0/0"
+        )
+        print(
+            f"{m['scale']}v{m['scale']:<7} | {m['count']:<8} | {m['avg_t4']:<12} | {m['avg_t8']:<12} | "
+            f"{m['avg_t12']:<12} | {m['avg_total']:<14} | {m['tps']:<8} | "
+            f"{mcp_ratio:<12} | {m.get('mcp_abuse_avg_latency', 0):<13}"
+        )
+    print("=" * 118)
     print("\n说明：")
     print("  - TPS = 成功审计数 / 最慢完成时间（批次吞吐量）")
     print("  - Auth(T4)延迟包含 DID 解析 + VP 验签")
     print("  - Probe(T8)延迟主要由 LLM 推理耗时决定")
     print("  - Context(T12)延迟为本地哈希比对，通常毫秒级")
+    print("  - MCP联动压测统计非法 action/resource 的并发请求拦截率（期望 HTTP 403）")
 
 
 if __name__ == "__main__":

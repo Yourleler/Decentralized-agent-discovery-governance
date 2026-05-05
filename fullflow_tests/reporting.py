@@ -14,6 +14,7 @@ except Exception:
 
     def generate_charts(  # type: ignore[no-redef]
         run_dir: Path,
+        phase_metrics: list[dict[str, Any]],
         latency_stats_rows: list[dict[str, Any]],
         case_assertions: list[dict[str, Any]],
         chain_tx_rows: list[dict[str, Any]],
@@ -22,6 +23,7 @@ except Exception:
     ) -> dict[str, str]:
         _ = (
             run_dir,
+            phase_metrics,
             latency_stats_rows,
             case_assertions,
             chain_tx_rows,
@@ -29,6 +31,18 @@ except Exception:
             scale_projection_rows,
         )
         return {}
+
+try:
+    from fullflow_tests.mcp_visualization import generate_mcp_charts
+except Exception:
+
+    def generate_mcp_charts(  # type: ignore[no-redef]
+        run_dir: Path,
+        case_assertions: list[dict[str, Any]],
+        mcp_metrics: list[dict[str, Any]],
+    ) -> list[str]:
+        _ = (run_dir, case_assertions, mcp_metrics)
+        return []
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
@@ -156,6 +170,62 @@ def build_latency_stats_rows(
             grouped_total[pair_name].append(duration)
     for pair_name, values in grouped_total.items():
         _append_latency_row(rows, scope="case", stage="Total", case_key=pair_name, values=values)
+
+    stress_task_rows = [row for row in phase_metrics if str(row.get("scenario")) == "concurrency_stress_task"]
+    _append_latency_row(
+        rows,
+        scope="metric",
+        stage="Concurrency_Stress_Total",
+        case_key="ALL",
+        values=[
+            safe_float(row.get("Total_Duration"), 0.0)
+            for row in stress_task_rows
+            if safe_float(row.get("Total_Duration"), 0.0) > 0
+        ],
+    )
+    stress_summary_rows = [row for row in phase_metrics if str(row.get("scenario")) == "concurrency_stress_summary"]
+    for stress_summary in stress_summary_rows:
+        level_name = str(stress_summary.get("load_level", "L1"))
+        rows.append(
+            {
+                "stat_scope": "concurrency_summary",
+                "latency_stage": "Concurrency_Stress",
+                "case_key": level_name,
+                "count": int(safe_float(stress_summary.get("total_tasks"), 0)),
+                "mean_seconds": safe_float(stress_summary.get("avg_duration_seconds"), 0.0),
+                "p50_seconds": safe_float(stress_summary.get("p50_duration_seconds"), 0.0),
+                "p95_seconds": safe_float(stress_summary.get("p95_duration_seconds"), 0.0),
+                "max_seconds": safe_float(stress_summary.get("max_duration_seconds"), 0.0),
+                "pass_rate": safe_float(stress_summary.get("pass_rate"), 0.0),
+                "throughput_tps": safe_float(stress_summary.get("throughput_tps"), 0.0),
+                "failed_tasks": int(safe_float(stress_summary.get("failed_tasks"), 0)),
+                "workers": int(safe_float(stress_summary.get("max_workers"), 0)),
+                "tasks_per_pair": int(safe_float(stress_summary.get("tasks_per_pair"), 0)),
+                "load_level": level_name,
+            }
+        )
+    if stress_summary_rows:
+        total_tasks_all = sum(int(safe_float(row.get("total_tasks"), 0)) for row in stress_summary_rows)
+        passed_tasks_all = sum(int(safe_float(row.get("passed_tasks"), 0)) for row in stress_summary_rows)
+        pass_rate_all = (float(passed_tasks_all) / float(max(1, total_tasks_all))) if total_tasks_all > 0 else 0.0
+        rows.append(
+            {
+                "stat_scope": "concurrency_summary_aggregate",
+                "latency_stage": "Concurrency_Stress",
+                "case_key": "ALL",
+                "count": total_tasks_all,
+                "mean_seconds": mean([safe_float(row.get("avg_duration_seconds"), 0.0) for row in stress_summary_rows]),
+                "p50_seconds": mean([safe_float(row.get("p50_duration_seconds"), 0.0) for row in stress_summary_rows]),
+                "p95_seconds": max([safe_float(row.get("p95_duration_seconds"), 0.0) for row in stress_summary_rows]),
+                "max_seconds": max([safe_float(row.get("max_duration_seconds"), 0.0) for row in stress_summary_rows]),
+                "pass_rate": pass_rate_all,
+                "throughput_tps": sum([safe_float(row.get("throughput_tps"), 0.0) for row in stress_summary_rows]),
+                "failed_tasks": max(total_tasks_all - passed_tasks_all, 0),
+                "workers": max([int(safe_float(row.get("max_workers"), 0)) for row in stress_summary_rows] + [0]),
+                "tasks_per_pair": max([int(safe_float(row.get("tasks_per_pair"), 0)) for row in stress_summary_rows] + [0]),
+                "load_level": "ALL",
+            }
+        )
 
     search_rows = [row for row in discovery_metrics if str(row.get("metric_type")) == "search_assertion"]
     _append_latency_row(
@@ -631,173 +701,199 @@ def build_summary_markdown(
     l2_operation_rows: list[dict[str, Any]],
     scale_projection_rows: list[dict[str, Any]],
     chart_files: dict[str, str],
+    raw_metrics: dict[str, Any] | None = None,
 ) -> str:
-    positive_rows = [row for row in phase_metrics if row.get("scenario") == "positive"]
-    passed_rows = [row for row in positive_rows if row.get("status") == "passed"]
-    round_rows = [row for row in phase_metrics if row.get("scenario") == "round_summary"]
+    raw = dict(raw_metrics or {})
+    cfg = dict(raw.get("config", {}))
+    run_status = str(raw.get("status", "unknown"))
+    run_dir_text = str(raw.get("run_dir", ""))
+
+    phase_order = ["provision", "discovery", "verification", "mcp_interop", "governance"]
+    phase_stat_map: dict[str, dict[str, int]] = {}
+    for phase in phase_order:
+        phase_rows = [row for row in case_assertions if str(row.get("phase", "")) == phase]
+        total = len(phase_rows)
+        passed = sum(1 for row in phase_rows if bool(row.get("passed")))
+        phase_stat_map[phase] = {
+            "total": total,
+            "passed": passed,
+            "failed": max(total - passed, 0),
+        }
+
+    positive_rows = [
+        row for row in phase_metrics
+        if str(row.get("scenario")) == "positive" and str(row.get("status")) == "passed"
+    ]
+    round_rows = [row for row in phase_metrics if str(row.get("scenario")) == "round_summary"]
     tps_values = [safe_float(row.get("round_tps"), 0.0) for row in round_rows if safe_float(row.get("round_tps"), 0.0) > 0]
+
+    stage_latency = {
+        str(row.get("latency_stage", "")): row
+        for row in latency_stats_rows
+        if str(row.get("stat_scope", "")) == "stage"
+    }
+    metric_latency = {
+        str(row.get("latency_stage", "")): row
+        for row in latency_stats_rows
+        if str(row.get("stat_scope", "")) == "metric"
+    }
+    stress_summaries = [
+        row for row in phase_metrics if str(row.get("scenario")) == "concurrency_stress_summary"
+    ]
+
+    negative_rows = [row for row in phase_metrics if str(row.get("scenario")) == "negative"]
+    mcp_rows = [row for row in case_assertions if str(row.get("phase")) == "mcp_interop"]
+    mcp_total = len(mcp_rows)
+    mcp_passed = sum(1 for row in mcp_rows if bool(row.get("passed")))
+    governance_passed = sum(1 for row in governance_metrics if str(row.get("status")) == "passed")
 
     total_cost_eth = sum(safe_float(row.get("cost_eth"), 0.0) for row in chain_tx_metrics)
     total_cost_usd = total_cost_eth * usd_per_eth
     total_cost_cny = total_cost_usd * usd_cny_rate
 
-    case_total = len(case_assertions)
-    case_passed = sum(1 for row in case_assertions if bool(row.get("passed")))
-    capability_count = len({str(row.get("capability_id", "")).strip() for row in case_assertions if str(row.get("capability_id", "")).strip()})
-
-    latency_map = {str(row.get("latency_stage")): row for row in latency_stats_rows if str(row.get("stat_scope")) == "stage"}
-    metric_latency_map = {str(row.get("latency_stage")): row for row in latency_stats_rows if str(row.get("stat_scope")) == "metric"}
-
-    discovery_search_rows = [row for row in discovery_metrics if str(row.get("metric_type")) == "search_assertion"]
-    discovery_hit_count = sum(1 for row in discovery_search_rows if bool(row.get("found")))
-    governance_passed = sum(1 for row in governance_metrics if str(row.get("status")) == "passed")
-
-    vector_rows = [row for row in discovery_metrics if str(row.get("metric_type")) == "vector_index_summary"]
-    vector_backend_set = sorted({str(row.get("vector_backend", "")).strip() for row in vector_rows if str(row.get("vector_backend", "")).strip()})
-    vector_lines: list[str] = []
-    vector_by_op: dict[str, dict[str, Any]] = {}
-    for row in vector_rows:
-        op = str(row.get("vector_operation", "")).strip()
-        if op:
-            vector_by_op[op] = row
-    for op in ("upsert", "query", "delete"):
-        row = vector_by_op.get(op)
-        if not row:
-            continue
-        vector_lines.append(
-            f"- 向量{op}: 调用 {int(safe_float(row.get('vector_call_count'), 0))} 次，"
-            f"均值 {safe_float(row.get('vector_mean_latency_ms')):.4f}ms，"
-            f"最大 {safe_float(row.get('vector_max_latency_ms')):.4f}ms"
-        )
-
-    l2_lines: list[str] = []
-    for row in sorted(l2_summary_rows, key=lambda item: str(item.get("l2_name", ""))):
-        l2_lines.append(
-            f"- {row.get('l2_name')}: 总成本约 {safe_float(row.get('cost_cny')):.4f} CNY，"
-            f"单笔均值约 {safe_float(row.get('avg_cost_cny_per_tx')):.4f} CNY"
-        )
-    if not l2_lines:
-        l2_lines.append("- 无可用链上交易明细，暂未产出 L2 成本估算。")
-
-    grouped_ops: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-    for row in l2_operation_rows:
-        op = str(row.get("operation_id", ""))
-        l2_name = str(row.get("l2_name", ""))
-        if op and l2_name:
-            grouped_ops[op][l2_name] = row
-
-    l2_op_lines: list[str] = []
-    for op in sorted(grouped_ops.keys()):
-        row_map = grouped_ops[op]
-        base = safe_float(row_map.get("base", {}).get("per_tx_cost_cny"), 0.0)
-        optimism = safe_float(row_map.get("optimism", {}).get("per_tx_cost_cny"), 0.0)
-        arbitrum = safe_float(row_map.get("arbitrum", {}).get("per_tx_cost_cny"), 0.0)
-        sample_row = next(iter(row_map.values()))
-        action_count = int(safe_float(sample_row.get("action_count"), 0))
-        gas_source = str(sample_row.get("gas_source", "default"))
-        l2_op_lines.append(
-            f"- {op}: 次数={action_count}，单笔估算[CNY] Base={base:.4f}, Optimism={optimism:.4f}, Arbitrum={arbitrum:.4f} (gas来源: {gas_source})"
-        )
-    if not l2_op_lines:
-        l2_op_lines.append("- 暂无按操作类型的 L2 成本估算。")
-
-    scale_line = "- 暂无规模估算数据。"
+    scale_note = "未启用规模外推"
     if scale_projection_rows:
-        peak = max(scale_projection_rows, key=lambda item: int(item.get("target_agents", 0) or 0))
-        scale_line = (
-            f"- 线性外推（{int(peak.get('target_agents', 0))} agents）："
-            f"总时延约 {safe_float(peak.get('est_total_time_seconds')):.2f}s，"
-            f"链上总成本约 {safe_float(peak.get('est_total_cost_cny')):.2f} CNY。"
+        peak = max(scale_projection_rows, key=lambda item: int(safe_float(item.get("target_agents"), 0)))
+        scale_note = (
+            f"{int(safe_float(peak.get('target_agents'), 0))} agents 估算: "
+            f"总时延 {safe_float(peak.get('est_total_time_seconds'), 0.0):.2f}s, "
+            f"总成本 {safe_float(peak.get('est_total_cost_cny'), 0.0):.2f} CNY"
         )
 
-    def _chart_line(filename: str, desc: str) -> str:
-        return f"- {desc}: `{chart_files.get(filename, '未生成')}`"
+    chart_desc_map = {
+        "chart_latency_stage.png": "主链路阶段延迟（T4/T8/T12/Total）",
+        "chart_security_negative_matrix.png": "安全负例通过/失败矩阵",
+        "chart_concurrency_stress.png": "并发压测矩阵（按规模档位）",
+        "chart_mcp_abuse_matrix.png": "MCP 并发越权拦截矩阵（按规模档位）",
+        "chart_tx_cost_eth.png": "链上成本分解（按交易类型）",
+        "chart_l2_cost_cny.png": "L2 成本估算",
+        "chart_scale_projection.png": "规模外推（时间/成本）",
+        "chart_mcp_latency_distribution.png": "MCP 批量调用延迟分布",
+        "chart_mcp_latency_matrix.png": "MCP 并发延迟矩阵（按规模档位）",
+        "chart_mcp_test_matrix.png": "MCP 用例分类通过率",
+        "chart_mcp_tool_comparison.png": "MCP 单次工具调用延迟",
+    }
 
-    def _chart_embed(filename: str, alt: str) -> list[str]:
-        if filename in chart_files:
-            return [f"![{alt}]({filename})", ""]
-        return [f"> 图 `{filename}` 未生成（可能缺少数据或绘图库）。", ""]
-
-    lines = [
-        "# Fullflow 测试摘要（论文口径）",
-        "",
-        "## 1. 验证阶段",
-        f"- 正向审计总数: {len(positive_rows)}",
-        f"- 正向审计通过数: {len(passed_rows)}",
-        f"- Auth 平均延迟(T4): {safe_float(latency_map.get('T4_auth', {}).get('mean_seconds')):.4f}s",
-        f"- Probe 平均延迟(T8): {safe_float(latency_map.get('T8_probe', {}).get('mean_seconds')):.4f}s",
-        f"- Context 平均延迟(T12): {safe_float(latency_map.get('T12_context', {}).get('mean_seconds')):.4f}s",
-        f"- 全流程平均延迟(Total): {safe_float(latency_map.get('Total', {}).get('mean_seconds')):.4f}s",
-        f"- 平均 TPS(按轮): {mean(tps_values):.4f}",
-        "",
-        "## 2. 用例覆盖",
-        f"- 用例总数: {case_total}",
-        f"- 用例通过数: {case_passed}",
-        f"- 用例通过率: {(case_passed / case_total * 100.0) if case_total else 0.0:.2f}%",
-        f"- 覆盖能力ID数: {capability_count}",
-        "",
-        "## 3. 发现与向量指标",
-        f"- Discovery 检索断言数: {len(discovery_search_rows)}",
-        f"- Discovery 命中数: {discovery_hit_count}",
-        f"- 向量后端: {', '.join(vector_backend_set) if vector_backend_set else '未记录'}",
-        f"- 向量匹配平均耗时: {safe_float(metric_latency_map.get('Vector_Match', {}).get('mean_seconds')) * 1000.0:.3f}ms",
-        f"- CID 上传平均耗时: {safe_float(metric_latency_map.get('CID_Upload', {}).get('mean_seconds')) * 1000.0:.3f}ms",
-        f"- CID 下载平均耗时: {safe_float(metric_latency_map.get('CID_Download', {}).get('mean_seconds')) * 1000.0:.3f}ms",
+    lines: list[str] = []
+    lines.append("# Fullflow 全流程测试汇报")
+    lines.append("")
+    lines.append("## 1) 运行概览")
+    lines.append(f"- 运行状态: `{run_status}`")
+    if run_dir_text:
+        lines.append(f"- 结果目录: `{run_dir_text}`")
+    lines.append(
+        f"- 配置: rounds={int(safe_float(cfg.get('rounds'), 0))}, "
+        f"account_strategy={cfg.get('account_strategy', '')}, "
+        f"governance_mode={cfg.get('governance_mode', '')}"
+    )
+    lines.append("")
+    lines.append("## 2) 覆盖范围")
+    lines.append("- Provision: 账户创建/复用、打币、DID 注册、Delegate 授权")
+    lines.append("- Discovery: 链上注册/更新、Subgraph 收录、Sidecar 检索断言")
+    lines.append("- Verification: 2v2 多轮正向审计 + S/M/L 并发矩阵 + 安全负例")
+    lines.append("- MCP Interop: 连接、工具发现、调用、权限控制、批量延迟")
+    lines.append("- Governance: Sepolia 举报 + 本地治理动作链路")
+    lines.append("")
+    lines.append("## 3) 分阶段结果")
+    lines.append("| 阶段 | 断言总数 | 通过 | 失败 | 通过率 |")
+    lines.append("|---|---:|---:|---:|---:|")
+    for phase in phase_order:
+        item = phase_stat_map.get(phase, {"total": 0, "passed": 0, "failed": 0})
+        total = int(item["total"])
+        passed = int(item["passed"])
+        failed = int(item["failed"])
+        rate = (passed / total * 100.0) if total > 0 else 0.0
+        lines.append(f"| {phase} | {total} | {passed} | {failed} | {rate:.1f}% |")
+    lines.append("")
+    lines.append("## 4) 性能与并发")
+    lines.append(
+        f"- 主链路平均延迟: T4={safe_float(stage_latency.get('T4_auth', {}).get('mean_seconds')):.3f}s, "
+        f"T8={safe_float(stage_latency.get('T8_probe', {}).get('mean_seconds')):.3f}s, "
+        f"T12={safe_float(stage_latency.get('T12_context', {}).get('mean_seconds')):.3f}s, "
+        f"Total={safe_float(stage_latency.get('Total', {}).get('mean_seconds')):.3f}s"
+    )
+    lines.append(
+        f"- 主链路 P95 延迟: T4={safe_float(stage_latency.get('T4_auth', {}).get('p95_seconds')):.3f}s, "
+        f"T8={safe_float(stage_latency.get('T8_probe', {}).get('p95_seconds')):.3f}s, "
+        f"T12={safe_float(stage_latency.get('T12_context', {}).get('p95_seconds')):.3f}s, "
+        f"Total={safe_float(stage_latency.get('Total', {}).get('p95_seconds')):.3f}s"
+    )
+    lines.append(f"- 轮次 TPS: avg={mean(tps_values):.4f}, max={max(tps_values) if tps_values else 0.0:.4f}")
+    if stress_summaries:
+        total_tasks = sum(int(safe_float(item.get("total_tasks"), 0)) for item in stress_summaries)
+        total_passed = sum(int(safe_float(item.get("passed_tasks"), 0)) for item in stress_summaries)
+        total_pass_rate = (float(total_passed) / float(max(1, total_tasks))) if total_tasks else 0.0
+        lines.append(
+            f"- 并发压测矩阵汇总: passed={total_passed}/{total_tasks}, pass_rate={total_pass_rate:.2%}, "
+            f"levels={len(stress_summaries)}"
+        )
+        lines.append("- 并发压测分档:")
+        for summary in stress_summaries:
+            level_name = str(summary.get("load_level", "L1"))
+            lines.append(
+                f"  - [{level_name}] tasks={int(safe_float(summary.get('total_tasks'), 0))}, "
+                f"pass_rate={safe_float(summary.get('pass_rate')):.2%}, "
+                f"p95={safe_float(summary.get('p95_duration_seconds')):.3f}s, "
+                f"throughput={safe_float(summary.get('throughput_tps')):.3f} tps"
+            )
+    else:
+        lines.append("- 并发压测: 未启用或未产出结果")
+    lines.append(
+        f"- Discovery 向量匹配均值: {safe_float(metric_latency.get('Vector_Match', {}).get('mean_seconds')) * 1000.0:.2f}ms"
+    )
+    lines.append("")
+    lines.append("## 5) 安全性测试（负例）")
+    if negative_rows:
+        for row in negative_rows:
+            case_name = str(row.get("negative_case", row.get("case_id", "")))
+            status = str(row.get("status", ""))
+            error = str(row.get("error", ""))
+            level_name = str(row.get("load_level", "")).strip()
+            case_label = f"{case_name}[{level_name}]" if level_name else case_name
+            lines.append(f"- {case_label}: `{status}`" + (f" | {error}" if error else ""))
+    else:
+        lines.append("- 未记录负例结果")
+    lines.append("")
+    lines.append("## 6) MCP 互操作")
+    lines.append(f"- 用例通过: {mcp_passed}/{mcp_total} ({(mcp_passed / mcp_total * 100.0) if mcp_total else 0.0:.1f}%)")
+    mcp_matrix_rows = [
+        row for row in case_assertions if str(row.get("capability_id")) == "mcp_interop.latency_matrix"
     ]
-    lines.extend(vector_lines)
-
-    lines.extend(
-        [
-            "",
-            "## 4. 成本阶段",
-            f"- 汇率口径: 1 ETH = {usd_per_eth:.2f} USD, 1 USD = {usd_cny_rate:.4f} CNY",
-            f"- 链上交易数: {len(chain_tx_metrics)}",
-            f"- 总成本(ETH): {total_cost_eth:.8f}",
-            f"- 总成本(USD): {total_cost_usd:.4f}",
-            f"- 总成本(CNY): {total_cost_cny:.4f}",
-            "",
-            "## 5. L2 总体估算",
-        ]
-    )
-    lines.extend(l2_lines)
-
-    lines.extend(["", "## 6. L2 按操作估算（含注册/申诉）"])
-    lines.extend(l2_op_lines)
-
-    lines.extend(
-        [
-            "",
-            "## 7. 治理阶段",
-            f"- 治理动作数: {len(governance_metrics)}",
-            f"- 治理通过数: {governance_passed}",
-            "",
-            "## 8. 大规模估算（线性口径）",
-            scale_line,
-            "",
-            "## 9. 图表",
-            _chart_line("chart_latency_stage.png", "阶段延迟图"),
-            _chart_line("chart_case_passrate.png", "能力通过率图"),
-            _chart_line("chart_tx_cost_eth.png", "链上成本图"),
-            _chart_line("chart_l2_cost_cny.png", "L2人民币估算图"),
-            _chart_line("chart_scale_projection.png", "规模外推图"),
-            "",
-        ]
-    )
-
-    lines.extend(_chart_embed("chart_latency_stage.png", "阶段延迟统计"))
-    lines.extend(_chart_embed("chart_case_passrate.png", "用例通过率"))
-    lines.extend(_chart_embed("chart_tx_cost_eth.png", "链上成本"))
-    lines.extend(_chart_embed("chart_l2_cost_cny.png", "L2人民币估算"))
-    lines.extend(_chart_embed("chart_scale_projection.png", "规模外推"))
-
-    lines.extend(
-        [
-            "## 10. 说明",
-            "- 本摘要聚合自 phase_metrics.csv / chain_tx_metrics.csv / discovery_metrics.csv / governance_metrics.csv / case_assertions.csv / latency_stats.csv / l2_cost_estimates.csv / l2_operation_estimates.csv / scale_projection.csv。",
-            "- l2_operation_estimates.csv 在缺失真实交易样本时使用默认 gas 参数估算，可在 reporting.operation_estimation 覆盖。",
-            "- CID 指标基于本地 .ipfs_cache 口径，用于稳定复测对比。",
-        ]
-    )
+    if mcp_matrix_rows:
+        lines.append("- MCP 并发延迟矩阵:")
+        for row in mcp_matrix_rows:
+            lines.append(
+                f"  - {str(row.get('case_id', ''))}: "
+                f"`{'passed' if bool(row.get('passed')) else 'failed'}` | {str(row.get('actual', ''))}"
+            )
+    lines.append("")
+    lines.append("## 7) 治理")
+    lines.append(f"- 治理动作通过: {governance_passed}/{len(governance_metrics)}")
+    lines.append("")
+    lines.append("## 8) 成本与规模")
+    lines.append(f"- 链上总成本: {total_cost_eth:.8f} ETH = {total_cost_usd:.2f} USD = {total_cost_cny:.2f} CNY")
+    if l2_summary_rows:
+        for row in sorted(l2_summary_rows, key=lambda item: str(item.get('l2_name', ''))):
+            lines.append(
+                f"- L2 {row.get('l2_name')}: total={safe_float(row.get('cost_cny')):.2f} CNY, "
+                f"avg/tx={safe_float(row.get('avg_cost_cny_per_tx')):.4f} CNY"
+            )
+    lines.append(f"- 规模外推: {scale_note}")
+    lines.append("")
+    lines.append("## 9) 图表清单（精简且可解释）")
+    for chart_name, desc in chart_desc_map.items():
+        if chart_name in chart_files:
+            lines.append(f"- `{chart_name}`: {desc}")
+    lines.append("")
+    lines.append("## 10) 复现命令")
+    lines.append("```bash")
+    lines.append("python fullflow_tests/run_fullflow.py --account-strategy fresh --governance-mode both --rounds 3")
+    lines.append("python fullflow_tests/run_fullflow.py")
+    lines.append("```")
+    lines.append("")
+    lines.append("## 11) 说明")
+    lines.append("- 本文为可直接汇报版本；详细原始数据请看 CSV/JSON 产物。")
+    lines.append("- 若某图未生成，通常是该类数据在本次 run 中为空。")
     return "\n".join(lines)
 
 
@@ -811,6 +907,7 @@ def write_reports(
     raw_metrics: dict[str, Any],
     usd_per_eth: float,
     reporting_config: dict[str, Any] | None = None,
+    mcp_metrics: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg = dict(reporting_config or {})
@@ -874,6 +971,7 @@ def write_reports(
     chain_action_projection_csv = run_dir / "chain_action_projection.csv"
     raw_json = run_dir / "raw_metrics.json"
     summary_md = run_dir / "summary.md"
+    full_report_md = run_dir / "fullflow_report.md"
 
     phase_fields = sorted({k for row in phase_metrics for k in row.keys()}) if phase_metrics else ["scenario", "status"]
     chain_fields = sorted({k for row in enriched_chain_rows for k in row.keys()}) if enriched_chain_rows else ["category", "status"]
@@ -897,6 +995,13 @@ def write_reports(
     write_csv(scale_projection_csv, scale_projection_rows, scale_fields)
     write_csv(chain_action_projection_csv, chain_action_projection_rows, action_projection_fields)
 
+    # MCP 互操作指标
+    mcp_rows = list(mcp_metrics or [])
+    mcp_csv = run_dir / "mcp_metrics.csv"
+    if mcp_rows:
+        mcp_fields = sorted({k for row in mcp_rows for k in row.keys()})
+        write_csv(mcp_csv, mcp_rows, mcp_fields)
+
     with raw_json.open("w", encoding="utf-8") as f:
         json.dump(raw_metrics, f, ensure_ascii=False, indent=2)
 
@@ -912,12 +1017,21 @@ def write_reports(
     else:
         chart_files = generate_charts(
             run_dir=run_dir,
+            phase_metrics=phase_metrics,
             latency_stats_rows=latency_stats_rows,
             case_assertions=normalized_case_assertions,
             chain_tx_rows=enriched_chain_rows,
             l2_summary_rows=l2_summary_rows,
             scale_projection_rows=scale_projection_rows,
         )
+        # MCP 互操作图表
+        mcp_chart_files = generate_mcp_charts(
+            run_dir=run_dir,
+            case_assertions=normalized_case_assertions,
+            mcp_metrics=mcp_rows,
+        )
+        for cf in mcp_chart_files:
+            chart_files[Path(cf).name] = cf
         summary_text = build_summary_markdown(
             phase_metrics=phase_metrics,
             chain_tx_metrics=enriched_chain_rows,
@@ -931,8 +1045,10 @@ def write_reports(
             l2_operation_rows=l2_operation_rows,
             scale_projection_rows=scale_projection_rows,
             chart_files=chart_files,
+            raw_metrics=raw_metrics,
         )
     summary_md.write_text(summary_text, encoding="utf-8")
+    full_report_md.write_text(summary_text, encoding="utf-8")
 
     return {
         "phase_metrics.csv": str(phase_csv),
@@ -947,5 +1063,6 @@ def write_reports(
         "chain_action_projection.csv": str(chain_action_projection_csv),
         "raw_metrics.json": str(raw_json),
         "summary.md": str(summary_md),
+        "fullflow_report.md": str(full_report_md),
         **{name: str(run_dir / name) for name in chart_files.keys()},
     }

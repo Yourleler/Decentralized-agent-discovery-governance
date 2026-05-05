@@ -1,4 +1,4 @@
-{
+﻿{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dagg.local/schemas/agent-metadata-format.schema.json",
   "title": "Agent Metadata",
@@ -188,6 +188,31 @@
             ],
             "additionalProperties": true
           }
+        }
+      },
+      "additionalProperties": true
+    },
+    "interop": {
+      "type": "object",
+      "description": "稳定的互操作说明，只放低频变化字段，不放动态工具权限。",
+      "properties": {
+        "supportedProtocols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "a2aEndpoint": {
+          "type": "string"
+        },
+        "supportedInteractionModes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authMode": {
+          "type": "string"
         }
       },
       "additionalProperties": true

@@ -1,135 +1,182 @@
-# 三个示例文件字段说明
+﻿# 示例字段说明（2026-04 对齐版）
 
-本文档说明以下三个示例文件中的字段含义：
+本文档对应以下示例文件：
+1. `config/agent_metadata_example.json`
+2. `config/vc_example.json`
+3. `config/vp_example.json`
 
-- `config/agent_metadata_example.json`
-- `config/vc_example.json`
-- `config/vp_example.json`
+目标：统一“发现字段、凭证字段、授权字段”的语义口径，避免样例和运行时实现不一致。
+
+---
 
 ## 1. agent_metadata_example.json
 
-### 顶层字段
-
-| 字段 | 含义 | 备注 |
+### 1.1 顶层字段
+| 字段 | 含义 | 说明 |
 |---|---|---|
-| `metadataVersion` | 元数据版本号 | 用于后续升级兼容 |
-| `agentDid` | Agent 的 DID 标识 | 应与链上注册 DID 一致 |
-| `adminAddress` | 管理员地址 | 用于治理追责或展示 |
-| `service` | 服务基本信息 | 名称、摘要、领域、端点等 |
-| `capabilities` | 能力列表 | 语义检索与能力匹配核心 |
-| `vcManifest` | VC 清单摘要 | 告诉对方有哪些凭证可按需拉取 |
-| `indexHints` | 检索提示信息 | 给向量化/关键词检索提供提示 |
-| `timestamps` | 创建/更新时间 | 便于同步与审计 |
+| `metadataVersion` | 元数据版本 | 用于升级兼容 |
+| `agentDid` | Agent DID | 应与链上注册 DID 一致 |
+| `adminAddress` | 管理地址 | 用于责任主体标识 |
+| `service` | 服务描述 | 发现阶段主输入 |
+| `capabilities` | 能力声明 | 语义检索和筛选依据 |
+| `vcManifest` | 凭证清单摘要 | 告诉对方“可按需出示哪些 VC” |
+| `indexHints` | 检索提示 | 向量文本与关键词提示 |
+| `timestamps` | 时间字段 | 建议 UTC ISO 8601 |
+| `interop` | 互操作稳定字段 | A2A/MCP 接入说明（低频变化） |
 
-### service 字段
+### 1.2 service 关键字段
+| 字段 | 含义 |
+|---|---|
+| `service.name` | 服务名称 |
+| `service.summary` | 服务摘要 |
+| `service.domain` | 业务领域 |
+| `service.tags` | 标签列表 |
+| `service.interactionModes` | 交互模式（如 `A2A_HTTP`） |
+| `service.endpoints[]` | 可用端点配置 |
 
-| 字段 | 含义 | 备注 |
+### 1.3 interop 字段（新增重点）
+| 字段 | 含义 | 是否高频变化 |
 |---|---|---|
-| `service.name` | 服务名称 | 人类可读展示名 |
-| `service.summary` | 服务摘要 | 1~2 句描述核心能力 |
-| `service.domain` | 业务领域 | 如 finance / medical |
-| `service.tags` | 标签 | 用于筛选和检索增强 |
-| `service.interactionModes` | 交互方式 | 如 `A2A_HTTP`、`JSON_RPC` |
-| `service.endpoints` | 可用端点列表 | 可含多个入口 |
-| `service.endpoints[].name` | 端点名称 | 如 primary-api |
-| `service.endpoints[].url` | 端点地址 | 客户端实际调用地址 |
-| `service.endpoints[].protocol` | 协议类型 | 如 https / ws |
-| `service.endpoints[].auth` | 鉴权方式 | 如 did-sig / bearer |
+| `interop.supportedProtocols` | 支持协议，如 `native`、`a2a` | 否 |
+| `interop.a2aEndpoint` | A2A 调用入口 | 否 |
+| `interop.supportedInteractionModes` | 互操作方式摘要 | 否 |
+| `interop.authMode` | 鉴权方式，如 `did-sig` | 否 |
 
-### capabilities 字段
+说明：
+- 动态工具权限不建议放 metadata，避免频繁改 CID。
 
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `capabilities[].id` | 能力唯一标识 | 推荐稳定命名 |
-| `capabilities[].name` | 能力名称 | 展示与检索使用 |
-| `capabilities[].description` | 能力描述 | 检索排序的重要文本 |
-| `capabilities[].inputs` | 输入参数列表 | 说明调用方要提供什么 |
-| `capabilities[].outputs` | 输出字段列表 | 说明返回结果结构 |
-| `capabilities[].examples` | 示例请求/任务 | 帮助快速理解能力 |
-
-### vcManifest / indexHints / timestamps 字段
-
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `vcManifest.holderDid` | 持证者 DID | 通常与 `agentDid` 对应主体一致 |
-| `vcManifest.types` | 支持的 VC 类型列表 | 如 `AgentIdentityCredential` |
-| `vcManifest.lazyFetch` | 是否按需拉取完整 VC | `true` 表示延迟加载 |
-| `vcManifest.fullVcRefs[]` | 完整 VC 引用列表 | 每项可带 `type/cid/uri/hash` |
-| `indexHints.vectorText` | 向量化主文本 | 直接给检索模型使用 |
-| `indexHints.searchableKeywords` | 关键词列表 | 做关键词过滤/补充召回 |
-| `timestamps.createdAt` | 创建时间 | ISO 8601 |
-| `timestamps.updatedAt` | 更新时间 | ISO 8601 |
+---
 
 ## 2. vc_example.json
 
-### 顶层字段
+### 2.1 VC 通用字段
+| 字段 | 含义 |
+|---|---|
+| `@context` | VC 语义上下文 |
+| `type` | 凭证类型（需含 `VerifiableCredential`） |
+| `issuer` | 发证方 DID |
+| `validFrom` / `validUntil` | 生效/过期时间 |
+| `credentialSubject` | 被证明主体及 claims |
+| `proof` | VC 签名证明 |
 
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `@context` | VC 语义上下文 | W3C VC 规范字段 |
-| `type` | VC 类型数组 | 必含 `VerifiableCredential` |
-| `issuer` | 发证方 DID | 签发该 VC 的主体 |
-| `validFrom` | 生效时间 | 或使用 `issuanceDate` |
-| `validUntil` | 失效时间 | 验证时可做过期检查 |
-| `credentialSubject` | 被证明主体声明 | 具体 claim 放这里 |
-| `proof` | 签名证明对象 | 含签名与验签元信息 |
+### 2.2 Toolset VC（AgentToolsetCredential）建议字段
+| 字段 | 含义 |
+|---|---|
+| `toolManifest[].identifier` | 工具唯一标识 |
+| `toolManifest[].providerProtocol` | `mcp` / `native` |
+| `toolManifest[].serverId` | MCP Server 标识 |
+| `toolManifest[].serverEndpoint` | 工具服务端点 |
+| `toolManifest[].allowedActions` | 允许动作 |
+| `toolManifest[].allowedResources` | 允许资源范围 |
+| `toolManifest[].riskLevel` | 风险等级 |
+| `toolManifest[].rateLimit` | 频率约束 |
+| `toolManifest[].operationalStatus` | 当前状态 |
 
-### credentialSubject 字段
-
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `credentialSubject.id` | 该 VC 证明的主体 DID | 通常是 holder DID |
-| `credentialSubject.agentDid` | Agent DID 冗余字段 | 便于跨模块关联 |
-| `credentialSubject.claimsVersion` | claims 版本号 | 便于 claim 结构演进 |
-| `credentialSubject.agent_name` | Agent 名称声明 | 业务自定义字段 |
-| `credentialSubject.developer_did` | 开发者 DID | 业务自定义字段 |
-| `credentialSubject.integrityCheck` | 完整性检查结果 | 业务自定义字段 |
-
-### proof 字段
-
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `proof.type` | 签名套件类型 | 例如 `EcdsaSecp256k1Signature2019` |
-| `proof.created` | 签名时间 | ISO 8601 |
-| `proof.verificationMethod` | 验证方法标识 | 通常是 DID 文档里的 key id |
-| `proof.proofPurpose` | 签名用途 | 如 `assertionMethod` |
-| `proof.jws` | 签名值 | 验签核心数据 |
+---
 
 ## 3. vp_example.json
 
-### 顶层字段
+### 3.1 VP 通用字段
+| 字段 | 含义 |
+|---|---|
+| `@context` | VP 语义上下文 |
+| `type` | 演示类型（需含 `VerifiablePresentation`） |
+| `holder` | 出示方 DID |
+| `verifiableCredential` | 携带的 VC 列表 |
+| `proof` | VP 自身签名 |
 
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `@context` | VP 语义上下文 | W3C VP 规范字段 |
-| `type` | VP 类型数组 | 必含 `VerifiablePresentation` |
-| `holder` | 持有者 DID | 发起展示与签名的一方 |
-| `holderBinding` | 持有者绑定信息 | 可用于 Admin/OP 分离追责 |
-| `verifiableCredential` | 携带的 VC 列表 | 供对方现场验证 |
-| `proof` | VP 自身签名证明 | 防篡改、防重放核心字段 |
+### 3.2 holderBinding（建议）
+| 字段 | 含义 |
+|---|---|
+| `holderBinding.agentDid` | 绑定 Agent DID |
+| `holderBinding.adminAddress` | Admin 责任主体 |
+| `holderBinding.opAddress` | OP 执行地址 |
+| `holderBinding.opKid` | OP key id |
 
-### holderBinding 字段
+### 3.3 session（新增重点）
+| 字段 | 含义 |
+|---|---|
+| `session.requestId` | 绑定请求编号 |
+| `session.timestamp` | 绑定请求时间 |
+| `session.resource` | 绑定请求资源 |
+| `session.action` | 绑定请求动作 |
+| `session.authorizationDetailsHash` | 绑定授权细节哈希 |
+| `session.verifierDid` | 绑定请求方 DID |
 
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `holderBinding.agentDid` | 绑定的 Agent DID | 追责主标识 |
-| `holderBinding.adminAddress` | 管理员地址 | 经济责任主体 |
-| `holderBinding.opAddress` | 操作地址 | 实际执行交互的地址 |
-| `holderBinding.opKid` | 操作密钥 ID | 对应 DID 文档中的 delegate key |
+意义：
+- 防止 VP 在不同请求间复用。
 
-### proof 字段
+---
 
-| 字段 | 含义 | 备注 |
-|---|---|---|
-| `proof.type` | VP 签名类型 | 例如 `EcdsaSecp256k1RecoverySignature2020` |
-| `proof.created` | 签名时间 | ISO 8601 |
-| `proof.verificationMethod` | 验证方法标识 | 通常是 holder 的 key id |
-| `proof.proofPurpose` | 签名用途 | 常见为 `authentication` |
-| `proof.challenge` | 挑战随机数（nonce） | 防重放，需与 verifier 下发一致 |
-| `proof.jws` | VP 签名值 | verifier 用它验签 |
+## 4. 请求封套字段（与运行时一致）
+下列字段应在 auth/probe/context/A2A 请求中统一提供：
 
-## 4. 使用建议
+| 字段 | 含义 |
+|---|---|
+| `requestId` | 请求唯一编号 |
+| `timestamp` | 请求时间 |
+| `nonce` | 防重放随机量 |
+| `resource` | 本次访问资源 |
+| `action` | 本次执行动作 |
+| `authorizationDetails` | 细粒度授权意图 |
 
-- 注册/发现阶段优先使用 metadata（轻量）。
-- 握手时携带 VP + 必要 VC（按需，避免过重）。
-- 任何时间相关字段统一使用 ISO 8601（UTC）。
+`authorizationDetails` 常用子字段：
+1. `type`
+2. `actions`
+3. `locations`
+4. `datatypes`
+5. `identifier`
+6. `privileges`
+
+---
+
+## 5. 使用建议
+1. 发现阶段：用 metadata（轻量）。
+2. 握手阶段：按需出示 VC/VP（最小必要披露）。
+3. 工具调用阶段：按 Toolset VC 的 `tool/action/resource` 做强校验。
+4. 治理阶段：保留 request/VP/response/日志作为 PoM 证据链。
+
+---
+
+## 6. 一致性检查清单
+提交样例前建议自检：
+1. DID 是否与链上/本地配置一致。
+2. 时间字段是否为 UTC ISO 8601。
+3. Toolset VC 是否包含动作与资源边界。
+4. VP session 是否与请求字段一一对应。
+5. metadata 是否只放稳定字段，避免把高频权限塞进去。
+
+---
+
+## 7. 这些字段在运行时分别被谁使用
+为了避免“样例写了但代码不用”这种情况，可以这样理解字段归属：
+1. metadata
+- 主要由 Discovery 和 Sidecar 使用。
+- 用于检索、展示、过滤、构建向量索引。
+
+2. VC
+- 主要由 Issuer 签发、Holder 持有、Verifier 按需验证。
+- 用于证明“你是谁、你有什么能力、你被授权用什么工具”。
+
+3. VP
+- 主要由 Holder 在握手阶段出示，Verifier 在现场验证。
+- 用于证明“这些 VC 现在由我为这次请求出示”。
+
+4. request 封套字段
+- 主要由 Verifier/A2A 请求方构造，Holder/Validator 校验。
+- 用于把权限判断从“验签”提升到“验签 + 验意图 + 验资源边界”。
+
+---
+
+## 8. 写样例时最容易出错的地方
+1. 把动态工具权限写进 metadata。
+- 这样会导致 metadata 频繁变化，不适合链上 CID 锚定。
+
+2. VP 没有绑定 requestId/resource/action。
+- 会让旧 VP 被错误复用。
+
+3. Toolset VC 没写 `allowedActions/allowedResources`。
+- 系统就没法做细粒度越权判断。
+
+4. DID、adminAddress、holderBinding 三者不一致。
+- 会导致追责路径混乱。

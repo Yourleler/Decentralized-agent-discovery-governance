@@ -1,0 +1,20 @@
+﻿{
+  "official-time": {
+    "transport": "stdio",
+    "command": "uvx",
+    "args": [
+      "mcp-server-time",
+      "--local-timezone=Asia/Shanghai"
+    ],
+    "env": {},
+    "timeout_seconds": 15,
+    "protocol_version": "2025-11-25"
+  },
+  "demo-search-http": {
+    "transport": "http",
+    "endpoint": "http://localhost:9300/mcp",
+    "timeout_seconds": 15,
+    "headers": {},
+    "protocol_version": "2025-11-25"
+  }
+}

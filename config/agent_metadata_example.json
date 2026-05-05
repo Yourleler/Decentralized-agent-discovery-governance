@@ -1,4 +1,4 @@
-{
+﻿{
   "metadataVersion": "2.0.0",
   "agentDid": "did:ethr:sepolia:0xe2e1620A139137F90236FF21630055760a3Bb5BE",
   "adminAddress": "0xe2e1620A139137F90236FF21630055760a3Bb5BE",
@@ -59,6 +59,18 @@
         "cid": "bafkreieat5ffz2mllmoeolgmiy2qbi7m7tspw2smhqs3swcusx7jjsod7q"
       }
     ]
+  },
+  "interop": {
+    "supportedProtocols": [
+      "native",
+      "a2a"
+    ],
+    "a2aEndpoint": "https://agent.example.com/api/v1/a2a",
+    "supportedInteractionModes": [
+      "A2A_HTTP",
+      "JSON_RPC"
+    ],
+    "authMode": "did-sig"
   },
   "indexHints": {
     "vectorText": "Finance forecasting agent for BTC and ETH time-series prediction.",

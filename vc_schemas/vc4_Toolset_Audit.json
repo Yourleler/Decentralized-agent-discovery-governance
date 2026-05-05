@@ -1,4 +1,4 @@
-{
+﻿{
   "@context": [
     "https://www.w3.org/ns/credentials/v2",
     "https://schema.org"
@@ -14,19 +14,39 @@
         "@type": "SoftwareApplication",
         "name": "SHA-256 Calculator",
         "identifier": "tool.hash.sha256",
+        "providerProtocol": "native",
+        "serverId": "local-holder-runtime",
+        "serverEndpoint": "local://holder-runtime",
         "description": "Calculates the SHA-256 hash of a given text string for verification purposes.",
+        "allowedActions": [
+          "execute"
+        ],
+        "allowedResources": [
+          "urn:dagg:holder:probe*"
+        ],
         "permissions": "local-compute",
         "rateLimit": "Unlimited",
-        "operationalStatus": "Active"
+        "riskLevel": "low",
+        "operationalStatus": "active"
       },
       {
         "@type": "SoftwareApplication",
-        "name": "UTC Time Oracle",
-        "identifier": "tool.time.utc_now",
-        "description": "Provides the current standard UTC timestamp.",
-        "permissions": "read-system-clock",
-        "rateLimit": "Unlimited",
-        "operationalStatus": "Active"
+        "name": "Web Search via MCP",
+        "identifier": "tool.web.search",
+        "providerProtocol": "mcp",
+        "serverId": "demo-search",
+        "serverEndpoint": "http://localhost:9300/mcp",
+        "description": "Queries external web search results through an MCP Server.",
+        "allowedActions": [
+          "query"
+        ],
+        "allowedResources": [
+          "resource:web.search:*"
+        ],
+        "permissions": "external-read",
+        "rateLimit": "60/min",
+        "riskLevel": "medium",
+        "operationalStatus": "active"
       }
     ]
   }

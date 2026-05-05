@@ -328,6 +328,113 @@ def fund_admin_accounts(
         )
 
 
+def build_reuse_topup_plan(
+    w3: Web3,
+    key_config: dict[str, Any],
+    agent_names: list[str],
+    target_balance_eth: float,
+) -> list[dict[str, Any]]:
+    """
+    功能：
+    为 reuse 账户计算 Admin 余额补款计划（按缺口补到目标阈值）。
+
+    参数：
+    w3 (Web3): Web3 实例。
+    key_config (dict[str, Any]): 现有 agents_4_key 配置。
+    agent_names (list[str]): Agent 名称列表。
+    target_balance_eth (float): 目标 Admin 最低余额（ETH）。
+
+    返回值：
+    list[dict[str, Any]]: 需要补款的 Admin 列表，包含缺口与当前余额信息。
+    """
+    accounts = key_config.get("accounts", {})
+    if not isinstance(accounts, dict):
+        return []
+    threshold_wei = int(w3.to_wei(target_balance_eth, "ether"))
+    topup_items: list[dict[str, Any]] = []
+    for agent_name in agent_names:
+        role = f"{agent_name}_admin"
+        entry = accounts.get(role, {})
+        if not isinstance(entry, dict):
+            continue
+        address = str(entry.get("address", "")).strip()
+        if not address:
+            continue
+        balance_wei = int(w3.eth.get_balance(address))
+        shortfall_wei = max(0, threshold_wei - balance_wei)
+        if shortfall_wei <= 0:
+            continue
+        topup_items.append(
+            {
+                "agent_name": agent_name,
+                "role": role,
+                "address": address,
+                "balance_wei": balance_wei,
+                "target_wei": threshold_wei,
+                "topup_wei": shortfall_wei,
+            }
+        )
+    return topup_items
+
+
+def topup_reuse_admin_accounts(
+    w3: Web3,
+    funder: dict[str, str],
+    topup_items: list[dict[str, Any]],
+    chain_tx_metrics: list[dict[str, Any]],
+) -> None:
+    """
+    功能：
+    对 reuse 模式下余额不足的 Admin 地址按缺口执行补款。
+
+    参数：
+    w3 (Web3): Web3 实例。
+    funder (dict[str, str]): 出资账户信息，包含 address/private_key。
+    topup_items (list[dict[str, Any]]): 需要补款的 Admin 列表。
+    chain_tx_metrics (list[dict[str, Any]]): 链上指标列表（就地追加）。
+
+    返回值：
+    None: 函数仅执行转账并写入指标。
+    """
+    if not topup_items:
+        return
+    funder_addr = str(funder["address"])
+    funder_pk = str(funder["private_key"])
+    chain_id = int(w3.eth.chain_id)
+    nonce = int(w3.eth.get_transaction_count(funder_addr, "pending"))
+    gas_price = int(w3.eth.gas_price * 1.2)
+
+    for idx, item in enumerate(topup_items):
+        to_addr = str(item["address"])
+        topup_wei = int(item["topup_wei"])
+        if topup_wei <= 0:
+            continue
+        tx = {
+            "nonce": nonce + idx,
+            "to": to_addr,
+            "value": topup_wei,
+            "gas": 21000,
+            "gasPrice": gas_price,
+            "chainId": chain_id,
+        }
+        tx_hash, receipt, latency = send_and_wait(w3, tx, funder_pk)
+        chain_tx_metrics.append(
+            build_tx_metric(
+                category="provision_reuse_topup",
+                actor="master",
+                tx_hash=tx_hash,
+                receipt=receipt,
+                tx=tx,
+                latency_seconds=latency,
+                note=(
+                    f"to={item.get('role', '')} "
+                    f"{int(item.get('balance_wei', 0))}->{int(item.get('target_wei', 0))} wei"
+                ),
+                case_id=f"provision_reuse_topup_{item.get('agent_name', '')}_admin",
+            )
+        )
+
+
 def register_did_implicit(
     w3: Web3,
     agents: list[dict[str, Any]],
@@ -541,6 +648,52 @@ def ensure_accounts(
                 ],
             }
         if strategy == "reuse":
+            if str(reason).startswith("余额不足:"):
+                master_role = str(provision_cfg.get("funder_account", "master"))
+                master_info = root_key_config.get("accounts", {}).get(master_role)
+                if not isinstance(master_info, dict):
+                    raise ValueError(f"config/key.json 缺少出资账户: {master_role}")
+                emit_progress("reuse 检测到余额不足，开始主账户补款")
+                topup_items = build_reuse_topup_plan(
+                    w3=w3,
+                    key_config=key_config,
+                    agent_names=agent_names,
+                    target_balance_eth=min_balance_eth,
+                )
+                if not topup_items:
+                    raise RuntimeError(f"reuse 策略校验失败: {reason}")
+                topup_reuse_admin_accounts(
+                    w3=w3,
+                    funder=master_info,
+                    topup_items=topup_items,
+                    chain_tx_metrics=chain_tx_metrics,
+                )
+                emit_progress(f"补款完成，共 {len(topup_items)} 个 Admin，开始复用复验")
+                ok_retry, reason_retry = validate_reusable_key_file(
+                    key_config=key_config,
+                    w3=w3,
+                    agent_names=agent_names,
+                    min_balance_eth=min_balance_eth,
+                    check_balance=True,
+                )
+                if not ok_retry:
+                    raise RuntimeError(f"reuse 补款后复验失败: {reason_retry}")
+                emit_progress("复用复验通过，继续使用现有账户")
+                return {
+                    "strategy_used": "reuse",
+                    "key_path": str(key_path),
+                    "key_config": key_config,
+                    "note": f"复用账户并自动补款 {len(topup_items)} 个 Admin",
+                    "case_assertions": [
+                        build_case_assertion(
+                            case_id="provision_reuse_autotopup",
+                            capability_id="provision.account_reuse_autotopup",
+                            expected="reuse 余额不足时自动补款并通过复验",
+                            actual=f"自动补款 {len(topup_items)} 个 Admin 并复验通过",
+                            passed=True,
+                        )
+                    ],
+                }
             raise RuntimeError(f"reuse 策略校验失败: {reason}")
         emit_progress(f"复用校验失败，回退新建账户: {reason}")
 

@@ -108,7 +108,8 @@ def generate_all_vcs(applicant_did):
     for filename in files:
         file_path = os.path.join(SCHEMA_DIR, filename)
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            # 兼容带 BOM 的模板文件，避免 Toolset VC 被静默跳过
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
                 template = json.load(f)
             
             # 处理单个模板

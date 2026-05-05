@@ -1,7 +1,7 @@
 {
   "profile": "paper",
   "rounds": 3,
-  "account_strategy": "mixed",
+  "account_strategy": "reuse",
   "governance_mode": "both",
   "discovery_bind_current": true,
   "random_seed": 20260307,
@@ -14,7 +14,7 @@
       "agent_d"
     ],
     "funder_account": "master",
-    "fund_amount_eth": 0.008,
+    "fund_amount_eth": 0.03,
     "min_balance_eth": 0.001,
     "post_register_buffer_eth": 0.001
   },
@@ -28,6 +28,7 @@
     "wait_timeout_seconds": 300,
     "poll_interval_seconds": 5,
     "sidecar_first": 200,
+    "sidecar_search_top_k": 20,
     "sidecar_max_pages": 50,
     "sidecar_max_rounds": 10
   },
@@ -50,11 +51,89 @@
         "holder_port": 5001
       }
     ],
-    "negative_verifier_role": "agent_c_op"
+    "negative_verifier_role": "agent_c_op",
+    "concurrency_stress": {
+      "enabled": true,
+      "tasks_per_pair": 2,
+      "max_workers": 8,
+      "min_pass_rate": 0.95,
+      "matrix_levels": [
+        {
+          "name": "S",
+          "tasks_per_pair": 2,
+          "max_workers": 8,
+          "min_pass_rate": 0.95
+        },
+        {
+          "name": "M",
+          "tasks_per_pair": 8,
+          "max_workers": 16,
+          "min_pass_rate": 0.95
+        },
+        {
+          "name": "L",
+          "tasks_per_pair": 16,
+          "max_workers": 24,
+          "min_pass_rate": 0.9
+        }
+      ]
+    },
+    "mcp_abuse_concurrency": {
+      "enabled": true,
+      "requests_per_pair": 20,
+      "max_workers": 32,
+      "min_pass_rate": 1.0,
+      "matrix_levels": [
+        {
+          "name": "S",
+          "requests_per_pair": 5,
+          "max_workers": 16,
+          "min_pass_rate": 1.0
+        },
+        {
+          "name": "M",
+          "requests_per_pair": 20,
+          "max_workers": 28,
+          "min_pass_rate": 1.0
+        },
+        {
+          "name": "L",
+          "requests_per_pair": 50,
+          "max_workers": 48,
+          "min_pass_rate": 1.0
+        }
+      ]
+    }
   },
   "governance": {
     "registry_address": "0x28249C2F09eF3196c1B42a0110dDD02D3B2b59B7",
     "local_script": "fullflow_tests/contracts/local_governance.js"
+  },
+  "mcp_interop": {
+    "enabled": true,
+    "servers_config_path": "config/mcp_servers.json",
+    "batch_call_count": 20,
+    "test_servers": ["official-time", "official-fetch"],
+    "latency_matrix": {
+      "enabled": true,
+      "levels": [
+        {
+          "name": "S",
+          "concurrency": 2,
+          "total_calls": 20
+        },
+        {
+          "name": "M",
+          "concurrency": 10,
+          "total_calls": 100
+        },
+        {
+          "name": "L",
+          "concurrency": 24,
+          "total_calls": 300
+        }
+      ]
+    }
   },
   "reporting": {
     "usd_per_eth": 2930.0,

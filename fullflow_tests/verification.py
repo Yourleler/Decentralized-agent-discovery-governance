@@ -13,10 +13,16 @@ from typing import Any
 import uuid
 
 import requests
+from web3 import Web3
 
 from agents.verifier.runtime import VerifierRuntime
 from infrastructure.validator import DIDValidator
 from infrastructure.wallet import IdentityWallet
+from interop.request_policy import (
+    build_authorization_details,
+    build_request_signature_payload,
+    with_request_envelope,
+)
 
 
 def emit_progress(message: str) -> None:
@@ -242,6 +248,249 @@ def compute_round_tps(success_rows: list[dict[str, Any]]) -> float:
     return float(len(success_rows)) / max_duration
 
 
+def compute_percentile(values: list[float], quantile: float) -> float:
+    """
+    功能：
+    计算浮点数组的分位值（线性插值）。
+    参数：
+    values (list[float]): 输入样本。
+    quantile (float): 分位点，范围 [0, 1]。
+    返回值：
+    float: 分位值；样本为空时返回 0.0。
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(float(item) for item in values)
+    if quantile <= 0:
+        return float(ordered[0])
+    if quantile >= 1:
+        return float(ordered[-1])
+    position = (len(ordered) - 1) * quantile
+    low = int(position)
+    high = min(low + 1, len(ordered) - 1)
+    if low == high:
+        return float(ordered[low])
+    weight = position - low
+    return float(ordered[low] * (1.0 - weight) + ordered[high] * weight)
+
+
+def to_level_key(level_name: str, fallback: str = "l1") -> str:
+    """
+    功能：
+    将负载档位名标准化为仅包含字母数字与下划线的 key。
+
+    参数：
+    level_name (str): 档位名，如 S/M/L 或 burst-1。
+    fallback (str): 为空时的兜底 key。
+
+    返回值：
+    str: 标准化 key。
+    """
+    raw = str(level_name or "").strip().lower()
+    if not raw:
+        return fallback
+    chars: list[str] = []
+    for ch in raw:
+        chars.append(ch if ch.isalnum() else "_")
+    key = "".join(chars).strip("_")
+    while "__" in key:
+        key = key.replace("__", "_")
+    return key or fallback
+
+
+def run_concurrency_stress_positive(
+    pairs: list[dict[str, Any]],
+    key_config: dict[str, Any],
+    runtime_base_dir: Path,
+    tasks_per_pair: int,
+    max_workers: int,
+    min_pass_rate: float,
+    load_level: str = "L1",
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    功能：
+    执行正向并发压测（Auth + Probe），输出任务级与汇总级指标。
+    参数：
+    pairs (list[dict[str, Any]]): verifier->holder 对组配置。
+    key_config (dict[str, Any]): agents_4_key 配置。
+    runtime_base_dir (Path): 验证阶段运行目录。
+    tasks_per_pair (int): 每个 pair 的并发任务数。
+    max_workers (int): 并发线程数上限。
+    min_pass_rate (float): 判定通过的最低通过率阈值。
+    返回值：
+    tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    (汇总行, 任务行列表, 证据列表)。
+    """
+    level_name = str(load_level or "L1")
+    level_key = to_level_key(level_name)
+    valid_pairs: list[dict[str, Any]] = []
+    for pair in pairs:
+        holder_port = int(pair.get("holder_port", 0) or 0)
+        verifier_role = str(pair.get("verifier_role", "")).strip()
+        if holder_port <= 0 or not verifier_role:
+            continue
+        valid_pairs.append(dict(pair))
+
+    if not valid_pairs:
+        summary_row = {
+            "scenario": "concurrency_stress_summary",
+            "case_id": f"verification_concurrency_stress_summary_{level_key}",
+            "capability_id": "verification.concurrency_stress_positive",
+            "load_level": level_name,
+            "load_level_key": level_key,
+            "status": "failed",
+            "error": "未找到可用并发压测 pair 配置",
+            "total_tasks": 0,
+            "passed_tasks": 0,
+            "failed_tasks": 0,
+            "pass_rate": 0.0,
+            "avg_duration_seconds": 0.0,
+            "p50_duration_seconds": 0.0,
+            "p95_duration_seconds": 0.0,
+            "max_duration_seconds": 0.0,
+            "wall_clock_seconds": 0.0,
+            "throughput_tps": 0.0,
+            "tasks_per_pair": max(1, int(tasks_per_pair)),
+            "max_workers": max(1, int(max_workers)),
+            "min_pass_rate": float(min_pass_rate),
+        }
+        evidence = [
+            {
+                "source": "concurrency_stress",
+                "load_level": level_name,
+                "message": "no_valid_pairs",
+                "timestamp": time.time(),
+            }
+        ]
+        return summary_row, [], evidence
+
+    planned_tasks_per_pair = max(1, int(tasks_per_pair))
+    total_tasks = planned_tasks_per_pair * len(valid_pairs)
+    worker_count = max(1, int(max_workers))
+    threshold = max(0.0, min(1.0, float(min_pass_rate)))
+
+    started_at = time.time()
+    task_rows: list[dict[str, Any]] = []
+    task_evidence: list[dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        future_map: dict[Any, dict[str, Any]] = {}
+        for task_index in range(total_tasks):
+            pair = dict(valid_pairs[task_index % len(valid_pairs)])
+            pair_name = str(pair.get("name", f"pair_{task_index}"))
+            future = pool.submit(
+                run_single_pair_auth_probe_task,
+                pair_cfg=pair,
+                key_config=key_config,
+                runtime_base_dir=runtime_base_dir / "concurrency_stress",
+                task_index=task_index + 1,
+                load_level=level_name,
+            )
+            future_map[future] = {
+                "task_index": task_index + 1,
+                "base_pair_name": pair_name,
+            }
+
+        for future in as_completed(future_map):
+            meta = future_map[future]
+            task_index = int(meta["task_index"])
+            base_pair_name = str(meta["base_pair_name"])
+            try:
+                row, evidence_items = future.result()
+                normalized_row = dict(row)
+                normalized_row["base_pair_name"] = base_pair_name
+                task_rows.append(normalized_row)
+                task_evidence.extend(evidence_items)
+            except Exception as exc:
+                failed_row = {
+                    "scenario": "concurrency_stress_task",
+                    "case_id": f"verification_concurrency_stress_task_{level_key}_{task_index}",
+                    "capability_id": "verification.concurrency_stress_positive",
+                    "load_level": level_name,
+                    "load_level_key": level_key,
+                    "task_index": task_index,
+                    "base_pair_name": base_pair_name,
+                    "status": "failed",
+                    "error": str(exc),
+                    "Total_Duration": 0.0,
+                    "auth_success": False,
+                    "probe_success": False,
+                    "context_success": False,
+                }
+                task_rows.append(failed_row)
+                task_evidence.append(
+                    {
+                        "source": "concurrency_stress",
+                        "load_level": level_name,
+                        "task_index": task_index,
+                        "base_pair_name": base_pair_name,
+                        "message": str(exc),
+                        "timestamp": time.time(),
+                    }
+                )
+
+    wall_clock_seconds = max(0.0, time.time() - started_at)
+    passed_tasks = sum(1 for row in task_rows if str(row.get("status")) == "passed")
+    failed_tasks = max(0, len(task_rows) - passed_tasks)
+    pass_rate = (float(passed_tasks) / float(max(1, len(task_rows)))) if task_rows else 0.0
+    durations = [
+        float(row.get("Total_Duration", 0.0))
+        for row in task_rows
+        if float(row.get("Total_Duration", 0.0)) > 0
+    ]
+    avg_duration = (sum(durations) / len(durations)) if durations else 0.0
+    p50_duration = compute_percentile(durations, 0.50)
+    p95_duration = compute_percentile(durations, 0.95)
+    max_duration = max(durations) if durations else 0.0
+    throughput_tps = (float(passed_tasks) / wall_clock_seconds) if wall_clock_seconds > 0 else 0.0
+    passed = bool(task_rows) and pass_rate >= threshold
+
+    failed_samples = [
+        {
+            "case_id": str(row.get("case_id", "")),
+            "base_pair_name": str(row.get("base_pair_name", "")),
+            "error": str(row.get("error", "")),
+            "status": str(row.get("status", "")),
+        }
+        for row in task_rows
+        if str(row.get("status")) != "passed"
+    ][:5]
+
+    summary_row = {
+        "scenario": "concurrency_stress_summary",
+        "case_id": f"verification_concurrency_stress_summary_{level_key}",
+        "capability_id": "verification.concurrency_stress_positive",
+        "load_level": level_name,
+        "load_level_key": level_key,
+        "status": "passed" if passed else "failed",
+        "error": "" if passed else f"并发压测通过率不足: {pass_rate:.4f} < {threshold:.4f}",
+        "total_tasks": len(task_rows),
+        "passed_tasks": passed_tasks,
+        "failed_tasks": failed_tasks,
+        "pass_rate": round(pass_rate, 4),
+        "avg_duration_seconds": round(avg_duration, 6),
+        "p50_duration_seconds": round(p50_duration, 6),
+        "p95_duration_seconds": round(p95_duration, 6),
+        "max_duration_seconds": round(max_duration, 6),
+        "wall_clock_seconds": round(wall_clock_seconds, 6),
+        "throughput_tps": round(throughput_tps, 6),
+        "tasks_per_pair": planned_tasks_per_pair,
+        "max_workers": worker_count,
+        "min_pass_rate": round(threshold, 4),
+    }
+    evidence = [
+        {
+            "source": "concurrency_stress",
+            "load_level": level_name,
+            "summary": summary_row,
+            "failed_samples": failed_samples,
+            "timestamp": time.time(),
+        }
+    ]
+    evidence.extend(task_evidence[:20])
+    return summary_row, task_rows, evidence
+
+
 def reset_holder_memory(holder_port: int, verifier_did: str, timeout_seconds: float = 20.0) -> bool:
     """
     功能：
@@ -401,6 +650,116 @@ def run_single_pair_audit(
     return row, evidence_items
 
 
+def run_single_pair_auth_probe_task(
+    pair_cfg: dict[str, Any],
+    key_config: dict[str, Any],
+    runtime_base_dir: Path,
+    task_index: int,
+    load_level: str = "L1",
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    功能：
+    执行并发压测任务（Auth + Probe），用于衡量并发吞吐与延迟。
+    参数：
+    pair_cfg (dict[str, Any]): verifier->holder 对组配置。
+    key_config (dict[str, Any]): agents_4_key 配置。
+    runtime_base_dir (Path): 运行时目录根路径。
+    task_index (int): 压测任务编号。
+    返回值：
+    tuple[dict[str, Any], list[dict[str, Any]]]:
+    (任务指标行, 失败证据列表)。
+    """
+    pair_name = str(pair_cfg["name"])
+    level_name = str(load_level or "L1")
+    level_key = to_level_key(level_name)
+    verifier_role = str(pair_cfg["verifier_role"])
+    holder_port = int(pair_cfg["holder_port"])
+    holder_url = f"http://localhost:{holder_port}"
+    runtime_dir = runtime_base_dir / f"stress_task_{task_index}_{pair_name}"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    row: dict[str, Any] = {
+        "scenario": "concurrency_stress_task",
+        "case_id": f"verification_concurrency_stress_task_{level_key}_{task_index}",
+        "capability_id": "verification.concurrency_stress_positive",
+        "load_level": level_name,
+        "load_level_key": level_key,
+        "task_index": task_index,
+        "pair_name": pair_name,
+        "verifier_role": verifier_role,
+        "holder_port": holder_port,
+        "auth_success": False,
+        "probe_success": False,
+        "context_success": "skipped",
+        "status": "failed",
+        "error": "",
+    }
+    evidence_items: list[dict[str, Any]] = []
+
+    started = time.time()
+    runtime = VerifierRuntime(
+        role_name=verifier_role,
+        config=key_config,
+        instance_name=f"{pair_name}_stress_{task_index}",
+        data_dir=str(runtime_dir),
+        target_holder_url=holder_url,
+    )
+
+    auth_ok, auth_msg, holder_did, auth_times = runtime.execute_auth()
+    row["auth_success"] = bool(auth_ok)
+    row["auth_msg"] = auth_msg
+    t1, t2, t3 = auth_times
+    row["T1"] = t1 - started
+    row["T2"] = t2 - t1
+    row["T3"] = t3 - t2
+    row["T4"] = row["T2"] + row["T3"]
+    if not auth_ok:
+        row["error"] = f"AUTH_FAIL: {auth_msg}"
+        evidence_items.append(
+            {
+                "source": "concurrency_stress",
+                "load_level": level_name,
+                "task_index": task_index,
+                "pair_name": pair_name,
+                "stage": "auth",
+                "message": auth_msg,
+                "holder_did": holder_did or "",
+                "timestamp": time.time(),
+            }
+        )
+        row["Total_Duration"] = row["T4"]
+        return row, evidence_items
+
+    probe_ok, probe_msg, probe_times = runtime.execute_probe(holder_did or "")
+    row["probe_success"] = bool(probe_ok)
+    row["probe_msg"] = probe_msg
+    p1, p2, p3, sla_ratio = probe_times
+    row["T5"] = p1 - t3
+    row["T6"] = p2 - p1
+    row["T7"] = p3 - p2
+    row["T8"] = row["T6"] + row["T7"]
+    row["SLA_Load_Ratio"] = float(sla_ratio)
+    row["Total_Duration"] = row["T4"] + row["T8"]
+    if not probe_ok:
+        row["error"] = f"PROBE_FAIL: {probe_msg}"
+        evidence_items.append(
+            {
+                "source": "concurrency_stress",
+                "load_level": level_name,
+                "task_index": task_index,
+                "pair_name": pair_name,
+                "stage": "probe",
+                "message": probe_msg,
+                "holder_did": holder_did or "",
+                "timestamp": time.time(),
+            }
+        )
+        return row, evidence_items
+
+    row["status"] = "passed"
+    return row, evidence_items
+
+
 def run_fake_signature_negative(
     holder_port: int,
     verifier_role: str,
@@ -420,13 +779,28 @@ def run_fake_signature_negative(
     (负例指标行, 证据列表)。
     """
     wallet = IdentityWallet(verifier_role, override_config=key_config)
-    payload = {
-        "nonce": str(uuid.uuid4()),
-        "verifier_did": wallet.did,
-        "type": "AuthRequest",
-        "timestamp": time.time(),
-        "verifier_signature": "0xdeadbeef",
-    }
+    nonce = str(uuid.uuid4())
+    auth_details = build_authorization_details(
+        detail_type="vp_presentation",
+        actions=["present"],
+        locations=[f"http://localhost:{holder_port}"],
+        datatypes=["AgentIdentityCredential", "AgentToolsetCredential"],
+        identifier="holder-auth",
+        privileges=["identity", "toolset"],
+    )
+    payload = with_request_envelope(
+        {
+            "nonce": nonce,
+            "verifier_did": wallet.did,
+            "type": "AuthRequest",
+            "requiredVcTypes": ["AgentIdentityCredential", "AgentToolsetCredential"],
+        },
+        resource="urn:dagg:holder:auth",
+        action="authenticate",
+        nonce=nonce,
+        authorization_details=auth_details,
+    )
+    payload["verifier_signature"] = "0xdeadbeef"
     resp = requests.post(f"http://localhost:{holder_port}/auth", json=payload, timeout=30)
     passed = resp.status_code == 401
 
@@ -448,6 +822,156 @@ def run_fake_signature_negative(
             "payload": payload,
             "response_status": resp.status_code,
             "response_body": resp.text[:500],
+            "timestamp": time.time(),
+        }
+    ]
+    return row, evidence
+
+
+def build_auth_request_payload(
+    verifier_did: str,
+    holder_port: int,
+    nonce: str | None = None,
+    required_vc_types: list[str] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """
+    功能：
+    生成标准 Auth 请求体（含请求封套字段），供正负例复用。
+
+    参数：
+    verifier_did (str): 发起方 DID。
+    holder_port (int): 目标 Holder 端口。
+    nonce (str | None): 可选固定 nonce。
+    required_vc_types (list[str] | None): 期望出示的 VC 类型列表。
+
+    返回值：
+    tuple[dict[str, Any], str]:
+    (封装后的请求体, 实际 nonce)。
+    """
+    actual_nonce = str(nonce or uuid.uuid4())
+    required_types = list(required_vc_types or ["AgentIdentityCredential", "AgentToolsetCredential"])
+    auth_details = build_authorization_details(
+        detail_type="vp_presentation",
+        actions=["present"],
+        locations=[f"http://localhost:{holder_port}"],
+        datatypes=required_types,
+        identifier="holder-auth",
+        privileges=["identity", "toolset"],
+    )
+    payload = with_request_envelope(
+        {
+            "nonce": actual_nonce,
+            "verifier_did": verifier_did,
+            "type": "AuthRequest",
+            "requiredVcTypes": required_types,
+        },
+        resource="urn:dagg:holder:auth",
+        action="authenticate",
+        nonce=actual_nonce,
+        authorization_details=auth_details,
+    )
+    return payload, actual_nonce
+
+
+def run_unregistered_agent_negative(
+    config: dict[str, Any],
+    key_config: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    功能：
+    执行“未注册 Agent”负例，校验其在注册表中的 isRegistered=False。
+
+    参数：
+    config (dict[str, Any]): fullflow 运行配置（读取 discovery.registry_address）。
+    key_config (dict[str, Any]): 密钥配置（读取 api_url）。
+
+    返回值：
+    tuple[dict[str, Any], list[dict[str, Any]]]:
+    (负例指标行, 证据列表)。
+    """
+    rpc_url = str(key_config.get("api_url", "")).strip()
+    registry_address = str(config.get("discovery", {}).get("registry_address", "")).strip()
+    if not rpc_url or not registry_address:
+        row = {
+            "scenario": "negative",
+            "case_id": "verification_negative_unregistered_agent",
+            "capability_id": "verification.unregistered_agent_reject",
+            "negative_case": "unregistered_agent",
+            "status": "failed",
+            "error": "缺少 api_url 或 discovery.registry_address",
+        }
+        evidence = [
+            {
+                "source": "negative_test",
+                "case": "unregistered_agent",
+                "rpc_url": rpc_url,
+                "registry_address": registry_address,
+                "timestamp": time.time(),
+            }
+        ]
+        return row, evidence
+
+    registry_abi = [
+        {
+            "inputs": [{"internalType": "string", "name": "", "type": "string"}],
+            "name": "getAgentByDID",
+            "outputs": [
+                {"internalType": "string", "name": "did", "type": "string"},
+                {"internalType": "address", "name": "admin", "type": "address"},
+                {"internalType": "address", "name": "op", "type": "address"},
+                {"internalType": "string", "name": "cid", "type": "string"},
+                {"internalType": "uint256", "name": "stakeAmount", "type": "uint256"},
+                {"internalType": "uint256", "name": "initScore", "type": "uint256"},
+                {"internalType": "uint256", "name": "accumulatedPenalty", "type": "uint256"},
+                {"internalType": "bool", "name": "isRegistered", "type": "bool"},
+                {"internalType": "bool", "name": "slashed", "type": "bool"},
+                {"internalType": "uint256", "name": "lastMisconductTimestamp", "type": "uint256"},
+            ],
+            "stateMutability": "view",
+            "type": "function",
+        }
+    ]
+
+    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    temp_account = w3.eth.account.create(extra_entropy=f"unregistered-{time.time_ns()}")
+    verifier_did = f"did:ethr:sepolia:{temp_account.address}"
+    registry_contract = w3.eth.contract(address=Web3.to_checksum_address(registry_address), abi=registry_abi)
+    is_registered = False
+    call_error = ""
+    fatal_error = False
+    try:
+        agent_tuple = registry_contract.functions.getAgentByDID(verifier_did).call()
+        is_registered = bool(agent_tuple[7]) if isinstance(agent_tuple, (list, tuple)) and len(agent_tuple) > 7 else False
+    except Exception as exc:  # noqa: BLE001
+        call_error = str(exc)
+        lowered = call_error.lower()
+        if "execution reverted" in lowered:
+            is_registered = False
+        else:
+            fatal_error = True
+
+    passed = (not is_registered) and (not fatal_error)
+    row = {
+        "scenario": "negative",
+        "case_id": "verification_negative_unregistered_agent",
+        "capability_id": "verification.unregistered_agent_reject",
+        "negative_case": "unregistered_agent",
+        "expected_result": "isRegistered=False",
+        "actual_result": (
+            f"isRegistered={is_registered}"
+            if not call_error
+            else f"isRegistered={is_registered} (call_error={call_error})"
+        ),
+        "status": "passed" if passed else "failed",
+        "error": "" if passed else (call_error or "未注册 Agent 在注册表中意外存在"),
+    }
+    evidence = [
+        {
+            "source": "negative_test",
+            "case": "unregistered_agent",
+            "verifier_did": verifier_did,
+            "registry_address": registry_address,
+            "is_registered": is_registered,
             "timestamp": time.time(),
         }
     ]
@@ -559,6 +1083,221 @@ def run_context_mismatch_negative(
     return row, evidence
 
 
+def _run_single_mcp_abuse_request(
+    *,
+    wallet: IdentityWallet,
+    pair_name: str,
+    holder_port: int,
+    case_cfg: dict[str, str],
+    request_index: int,
+) -> dict[str, Any]:
+    """
+    功能：
+    发起单条 A2A + MCP 越权请求，记录是否被 403 拦截。
+
+    参数：
+    wallet (IdentityWallet): 发起请求的钱包。
+    pair_name (str): 对组名称。
+    holder_port (int): 目标 Holder 端口。
+    case_cfg (dict[str, str]): 越权场景定义（case_id/resource/action）。
+    request_index (int): 并发请求序号。
+
+    返回值：
+    dict[str, Any]: 单条请求执行结果。
+    """
+    case_id = str(case_cfg.get("case_id", "mcp_abuse_unknown"))
+    resource = str(case_cfg.get("resource", "")).strip()
+    action = str(case_cfg.get("action", "")).strip()
+    target_uri = f"http://localhost:{holder_port}/a2a/message/send"
+    started = time.perf_counter()
+    try:
+        auth_details = build_authorization_details(
+            detail_type="tool-execution",
+            actions=[action],
+            locations=[f"http://localhost:{holder_port}"],
+            datatypes=["tool-call"],
+            identifier=case_id,
+            privileges=["tool"],
+        )
+        payload = with_request_envelope(
+            {
+                "senderDid": wallet.did,
+                "message": f"{case_id}-idx-{request_index}",
+                "toolCall": {
+                    "providerProtocol": "mcp",
+                    "serverId": "official-time",
+                    "toolName": "get_current_time",
+                    "arguments": {"timezone": "Asia/Shanghai"},
+                },
+            },
+            resource=resource,
+            action=action,
+            request_id=str(uuid.uuid4()),
+            authorization_details=auth_details,
+        )
+        serialized = build_request_signature_payload(
+            payload,
+            http_method="POST",
+            target_uri=target_uri,
+        )
+        payload["senderSignature"] = wallet.sign_message(serialized)
+        resp = requests.post(target_uri, json=payload, timeout=30)
+        elapsed = time.perf_counter() - started
+        blocked = resp.status_code == 403
+        return {
+            "pair_name": pair_name,
+            "case_id": case_id,
+            "request_index": request_index,
+            "holder_port": holder_port,
+            "status_code": resp.status_code,
+            "blocked": blocked,
+            "latency_seconds": elapsed,
+            "error": "" if blocked else f"期望403，实际{resp.status_code}",
+        }
+    except Exception as exc:  # noqa: BLE001
+        elapsed = time.perf_counter() - started
+        return {
+            "pair_name": pair_name,
+            "case_id": case_id,
+            "request_index": request_index,
+            "holder_port": holder_port,
+            "status_code": 0,
+            "blocked": False,
+            "latency_seconds": elapsed,
+            "error": str(exc),
+        }
+
+
+def run_mcp_abuse_concurrency_negative(
+    pairs: list[dict[str, Any]],
+    key_config: dict[str, Any],
+    requests_per_pair: int = 5,
+    max_workers: int = 8,
+    load_level: str = "L1",
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    功能：
+    执行并发 MCP 越权联动负例（非法 action / 非法 resource）。
+
+    参数：
+    pairs (list[dict[str, Any]]): fullflow 配置中的验证对组。
+    key_config (dict[str, Any]): agents_4_key 配置。
+    requests_per_pair (int): 每个 pair 每类场景并发请求数。
+    max_workers (int): 并发线程数上限。
+
+    返回值：
+    tuple[dict[str, Any], list[dict[str, Any]]]:
+    (汇总指标行, 证据列表)。
+    """
+    level_name = str(load_level or "L1")
+    level_key = to_level_key(level_name)
+
+    if requests_per_pair <= 0:
+        row = {
+            "scenario": "negative",
+            "case_id": f"verification_negative_mcp_abuse_concurrency_{level_key}",
+            "capability_id": "verification.mcp_abuse_concurrency_reject",
+            "negative_case": "mcp_abuse_concurrency",
+            "load_level": level_name,
+            "load_level_key": level_key,
+            "status": "passed",
+            "total_requests": 0,
+            "blocked_requests": 0,
+            "pass_rate": 1.0,
+            "avg_latency_seconds": 0.0,
+            "max_latency_seconds": 0.0,
+            "error": "",
+        }
+        return row, []
+
+    abuse_cases = [
+        {
+            "case_id": "mcp_abuse_unauthorized_action",
+            "resource": "resource:time:current",
+            "action": "execute",
+        },
+        {
+            "case_id": "mcp_abuse_unauthorized_resource",
+            "resource": "resource:system:admin",
+            "action": "query",
+        },
+    ]
+
+    wallet_map: dict[str, IdentityWallet] = {}
+    for pair in pairs:
+        verifier_role = str(pair.get("verifier_role", "")).strip()
+        if not verifier_role:
+            continue
+        if verifier_role in wallet_map:
+            continue
+        wallet_map[verifier_role] = IdentityWallet(verifier_role, override_config=key_config)
+
+    results: list[dict[str, Any]] = []
+    futures = []
+    worker_count = max(1, int(max_workers))
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        for pair in pairs:
+            pair_name = str(pair.get("name", "pair"))
+            verifier_role = str(pair.get("verifier_role", "")).strip()
+            holder_port = int(pair.get("holder_port", 0) or 0)
+            wallet = wallet_map.get(verifier_role)
+            if wallet is None or holder_port <= 0:
+                continue
+            for case_cfg in abuse_cases:
+                for request_idx in range(requests_per_pair):
+                    futures.append(
+                        pool.submit(
+                            _run_single_mcp_abuse_request,
+                            wallet=wallet,
+                            pair_name=pair_name,
+                            holder_port=holder_port,
+                            case_cfg=case_cfg,
+                            request_index=request_idx,
+                        )
+                    )
+
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    total_requests = len(results)
+    blocked_requests = sum(1 for item in results if bool(item.get("blocked")))
+    latencies = [float(item.get("latency_seconds", 0.0)) for item in results if float(item.get("latency_seconds", 0.0)) > 0]
+    avg_latency = (sum(latencies) / len(latencies)) if latencies else 0.0
+    max_latency = max(latencies) if latencies else 0.0
+    pass_rate = (float(blocked_requests) / float(total_requests)) if total_requests > 0 else 0.0
+    passed = (total_requests > 0) and (blocked_requests == total_requests)
+
+    failed_samples = [item for item in results if not bool(item.get("blocked"))][:5]
+    evidence_items = [
+        {
+            "source": "negative_test",
+            "case": "mcp_abuse_concurrency",
+            "load_level": level_name,
+            "total_requests": total_requests,
+            "blocked_requests": blocked_requests,
+            "pass_rate": pass_rate,
+            "failed_samples": failed_samples,
+            "timestamp": time.time(),
+        }
+    ]
+    row = {
+        "scenario": "negative",
+        "case_id": f"verification_negative_mcp_abuse_concurrency_{level_key}",
+        "capability_id": "verification.mcp_abuse_concurrency_reject",
+        "negative_case": "mcp_abuse_concurrency",
+        "load_level": level_name,
+        "load_level_key": level_key,
+        "status": "passed" if passed else "failed",
+        "total_requests": total_requests,
+        "blocked_requests": blocked_requests,
+        "pass_rate": round(pass_rate, 4),
+        "avg_latency_seconds": round(avg_latency, 6),
+        "max_latency_seconds": round(max_latency, 6),
+        "error": "" if passed else f"并发越权请求存在漏拦截: {blocked_requests}/{total_requests}",
+    }
+    return row, evidence_items
+
+
 def request_valid_auth_vp(
     holder_port: int,
     verifier_role: str,
@@ -578,14 +1317,15 @@ def request_valid_auth_vp(
     (是否成功, 消息, VP对象, 原始nonce)。
     """
     wallet = IdentityWallet(verifier_role, override_config=key_config)
-    nonce = str(uuid.uuid4())
-    payload = {
-        "nonce": nonce,
-        "verifier_did": wallet.did,
-        "type": "AuthRequest",
-        "timestamp": time.time(),
-    }
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    payload, nonce = build_auth_request_payload(
+        verifier_did=wallet.did,
+        holder_port=holder_port,
+    )
+    serialized = build_request_signature_payload(
+        payload,
+        http_method="POST",
+        target_uri=f"http://localhost:{holder_port}/auth",
+    )
     payload["verifier_signature"] = wallet.sign_message(serialized)
     try:
         resp = requests.post(f"http://localhost:{holder_port}/auth", json=payload, timeout=30)
@@ -600,6 +1340,143 @@ def request_valid_auth_vp(
     if not isinstance(vp, dict):
         return False, "返回 VP 结构非法", None, nonce
     return True, "ok", vp, nonce
+
+
+def run_expired_vc_negative(
+    holder_port: int,
+    verifier_role: str,
+    key_config: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    功能：
+    执行“过期 VC”负例，期望 verify_vp 失败。
+
+    参数：
+    holder_port (int): 目标 Holder 端口。
+    verifier_role (str): Verifier 角色名。
+    key_config (dict[str, Any]): agents_4_key 配置。
+
+    返回值：
+    tuple[dict[str, Any], list[dict[str, Any]]]:
+    (负例指标行, 证据列表)。
+    """
+    ok, msg, vp, nonce = request_valid_auth_vp(
+        holder_port=holder_port,
+        verifier_role=verifier_role,
+        key_config=key_config,
+    )
+    if not ok or vp is None:
+        row = {
+            "scenario": "negative",
+            "case_id": "verification_negative_expired_vc",
+            "capability_id": "verification.expired_vc_reject",
+            "negative_case": "expired_vc",
+            "status": "failed",
+            "error": f"负例前置 auth 失败: {msg}",
+        }
+        evidence = [
+            {
+                "source": "negative_test",
+                "case": "expired_vc",
+                "message": msg,
+                "timestamp": time.time(),
+            }
+        ]
+        return row, evidence
+
+    tampered_vp = copy.deepcopy(vp)
+    vc_list = tampered_vp.get("verifiableCredential")
+    if not isinstance(vc_list, list) or not vc_list:
+        row = {
+            "scenario": "negative",
+            "case_id": "verification_negative_expired_vc",
+            "capability_id": "verification.expired_vc_reject",
+            "negative_case": "expired_vc",
+            "status": "failed",
+            "error": "VP 中缺少可篡改 VC",
+        }
+        evidence = [
+            {
+                "source": "negative_test",
+                "case": "expired_vc",
+                "message": "VP 中缺少 verifiableCredential",
+                "timestamp": time.time(),
+            }
+        ]
+        return row, evidence
+
+    target_vc = vc_list[0]
+    if not isinstance(target_vc, dict):
+        row = {
+            "scenario": "negative",
+            "case_id": "verification_negative_expired_vc",
+            "capability_id": "verification.expired_vc_reject",
+            "negative_case": "expired_vc",
+            "status": "failed",
+            "error": "VC 结构非法",
+        }
+        evidence = [
+            {
+                "source": "negative_test",
+                "case": "expired_vc",
+                "message": "VC 结构非法",
+                "timestamp": time.time(),
+            }
+        ]
+        return row, evidence
+
+    origin_valid_until = str(target_vc.get("validUntil", ""))
+    target_vc["validUntil"] = "2000-01-01T00:00:00Z"
+
+    holder_did = tampered_vp.get("holder")
+    if isinstance(holder_did, dict):
+        holder_did = holder_did.get("id")
+    holder_signer: IdentityWallet | None = None
+    for role_name in key_config.get("accounts", {}):
+        role_text = str(role_name)
+        if not role_text.endswith("_op"):
+            continue
+        try:
+            wallet = IdentityWallet(role_text, override_config=key_config)
+        except Exception:
+            continue
+        if wallet.did == holder_did:
+            holder_signer = wallet
+            break
+
+    if holder_signer is not None:
+        vp_unsigned = copy.deepcopy(tampered_vp)
+        vp_unsigned.pop("proof", None)
+        serialized_vp = json.dumps(vp_unsigned, sort_keys=True, separators=(",", ":"))
+        proof_obj = tampered_vp.get("proof") if isinstance(tampered_vp.get("proof"), dict) else {}
+        proof_obj["jws"] = holder_signer.sign_message(serialized_vp)
+        tampered_vp["proof"] = proof_obj
+
+    validator = DIDValidator()
+    valid, reason = validator.verify_vp(tampered_vp, expected_nonce=nonce)
+    passed = (not valid) and ("过期" in reason or "expired" in reason.lower())
+    row = {
+        "scenario": "negative",
+        "case_id": "verification_negative_expired_vc",
+        "capability_id": "verification.expired_vc_reject",
+        "negative_case": "expired_vc",
+        "expected_result": "verify_vp=False",
+        "actual_result": f"verify_vp={valid}",
+        "validator_reason": reason,
+        "status": "passed" if passed else "failed",
+        "error": "" if passed else "过期VC未被拒绝",
+    }
+    evidence = [
+        {
+            "source": "negative_test",
+            "case": "expired_vc",
+            "original_valid_until": origin_valid_until,
+            "tampered_valid_until": target_vc.get("validUntil"),
+            "validator_reason": reason,
+            "timestamp": time.time(),
+        }
+    ]
+    return row, evidence
 
 
 def run_tampered_vp_challenge_negative(
@@ -770,6 +1647,81 @@ def run_verification_flow(
         )
     )
     negative_verifier_role = str(verify_cfg.get("negative_verifier_role", "agent_c_op"))
+    mcp_abuse_cfg = dict(verify_cfg.get("mcp_abuse_concurrency", {}))
+    mcp_abuse_enabled = bool(mcp_abuse_cfg.get("enabled", True))
+    mcp_abuse_requests_per_pair = int(mcp_abuse_cfg.get("requests_per_pair", 5))
+    mcp_abuse_max_workers = int(
+        mcp_abuse_cfg.get(
+            "max_workers",
+            max(4, len(pairs) * max(1, mcp_abuse_requests_per_pair)),
+        )
+    )
+    mcp_abuse_min_pass_rate = float(mcp_abuse_cfg.get("min_pass_rate", 1.0))
+    mcp_abuse_raw_levels = mcp_abuse_cfg.get("matrix_levels", [])
+    mcp_abuse_levels: list[dict[str, Any]] = []
+    if isinstance(mcp_abuse_raw_levels, list):
+        for idx, item in enumerate(mcp_abuse_raw_levels):
+            if not isinstance(item, dict):
+                continue
+            level_name = str(item.get("name", f"L{idx + 1}")).strip() or f"L{idx + 1}"
+            level_requests = int(item.get("requests_per_pair", mcp_abuse_requests_per_pair))
+            level_workers = int(item.get("max_workers", mcp_abuse_max_workers))
+            level_threshold = float(item.get("min_pass_rate", mcp_abuse_min_pass_rate))
+            mcp_abuse_levels.append(
+                {
+                    "name": level_name,
+                    "requests_per_pair": max(1, level_requests),
+                    "max_workers": max(1, level_workers),
+                    "min_pass_rate": max(0.0, min(1.0, level_threshold)),
+                }
+            )
+    if not mcp_abuse_levels:
+        mcp_abuse_levels.append(
+            {
+                "name": "L1",
+                "requests_per_pair": max(1, mcp_abuse_requests_per_pair),
+                "max_workers": max(1, mcp_abuse_max_workers),
+                "min_pass_rate": max(0.0, min(1.0, mcp_abuse_min_pass_rate)),
+            }
+        )
+
+    concurrency_cfg = dict(verify_cfg.get("concurrency_stress", {}))
+    concurrency_enabled = bool(concurrency_cfg.get("enabled", True))
+    concurrency_tasks_per_pair = int(concurrency_cfg.get("tasks_per_pair", 2))
+    concurrency_max_workers = int(
+        concurrency_cfg.get(
+            "max_workers",
+            max(4, len(pairs) * max(1, concurrency_tasks_per_pair)),
+        )
+    )
+    concurrency_min_pass_rate = float(concurrency_cfg.get("min_pass_rate", 0.95))
+    concurrency_raw_levels = concurrency_cfg.get("matrix_levels", [])
+    concurrency_levels: list[dict[str, Any]] = []
+    if isinstance(concurrency_raw_levels, list):
+        for idx, item in enumerate(concurrency_raw_levels):
+            if not isinstance(item, dict):
+                continue
+            level_name = str(item.get("name", f"L{idx + 1}")).strip() or f"L{idx + 1}"
+            level_tasks = int(item.get("tasks_per_pair", concurrency_tasks_per_pair))
+            level_workers = int(item.get("max_workers", concurrency_max_workers))
+            level_threshold = float(item.get("min_pass_rate", concurrency_min_pass_rate))
+            concurrency_levels.append(
+                {
+                    "name": level_name,
+                    "tasks_per_pair": max(1, level_tasks),
+                    "max_workers": max(1, level_workers),
+                    "min_pass_rate": max(0.0, min(1.0, level_threshold)),
+                }
+            )
+    if not concurrency_levels:
+        concurrency_levels.append(
+            {
+                "name": "L1",
+                "tasks_per_pair": max(1, concurrency_tasks_per_pair),
+                "max_workers": max(1, concurrency_max_workers),
+                "min_pass_rate": max(0.0, min(1.0, concurrency_min_pass_rate)),
+            }
+        )
 
     phase_metrics: list[dict[str, Any]] = []
     evidence_items: list[dict[str, Any]] = []
@@ -903,10 +1855,10 @@ def run_verification_flow(
             success_rows = [item for item in round_rows if item.get("status") == "passed"]
             failed_rows = [item for item in round_rows if item.get("status") != "passed"]
             if failed_rows:
-                first = failed_rows[0]
-                raise AssertionError(
-                    f"正向用例失败: pair={first.get('pair_name')} round={first.get('round')} error={first.get('error')}"
-                )
+                for first in failed_rows:
+                    emit_progress(
+                        f"正向用例失败（继续）: pair={first.get('pair_name')} round={first.get('round')} error={first.get('error')}"
+                    )
             round_tps = compute_round_tps(success_rows)
             round_summary = {
                 "scenario": "round_summary",
@@ -919,6 +1871,82 @@ def run_verification_flow(
             phase_metrics.append(round_summary)
             emit_progress(
                 f"第 {round_index} 轮完成: success={len(success_rows)}/{len(round_rows)} tps={round_tps:.4f}"
+            )
+
+        if concurrency_enabled:
+            stress_summaries: list[dict[str, Any]] = []
+            for level in concurrency_levels:
+                level_name = str(level.get("name", "L1"))
+                level_tasks = int(level.get("tasks_per_pair", concurrency_tasks_per_pair))
+                level_workers = int(level.get("max_workers", concurrency_max_workers))
+                level_threshold = float(level.get("min_pass_rate", concurrency_min_pass_rate))
+                emit_progress(
+                    "执行并发压测: positive_concurrency_stress "
+                    f"[{level_name}] "
+                    f"(tasks_per_pair={level_tasks}, workers={level_workers}, min_pass_rate={level_threshold:.2f})"
+                )
+                stress_summary, stress_task_rows, stress_evidence = run_concurrency_stress_positive(
+                    pairs=pairs,
+                    key_config=key_config,
+                    runtime_base_dir=runtime_base_dir,
+                    tasks_per_pair=level_tasks,
+                    max_workers=level_workers,
+                    min_pass_rate=level_threshold,
+                    load_level=level_name,
+                )
+                phase_metrics.extend(stress_task_rows)
+                phase_metrics.append(stress_summary)
+                stress_summaries.append(stress_summary)
+                evidence_items.extend(stress_evidence)
+                case_assertions.append(
+                    build_case_assertion(
+                        case_id=str(stress_summary.get("case_id", "verification_concurrency_stress_summary")),
+                        capability_id=str(stress_summary.get("capability_id", "verification.concurrency_stress_positive")),
+                        expected=(
+                            f"[{level_name}] 并发压测通过率 >= {float(stress_summary.get('min_pass_rate', level_threshold)):.2f}"
+                        ),
+                        actual=(
+                            f"level={level_name} "
+                            f"status={stress_summary.get('status')} "
+                            f"pass_rate={stress_summary.get('pass_rate')} "
+                            f"passed={stress_summary.get('passed_tasks', 0)}/{stress_summary.get('total_tasks', 0)} "
+                            f"p95={stress_summary.get('p95_duration_seconds', 0)}s "
+                            f"tps={stress_summary.get('throughput_tps', 0)}"
+                        ),
+                        passed=str(stress_summary.get("status")) == "passed",
+                        error=str(stress_summary.get("error", "")),
+                    )
+                )
+                if str(stress_summary.get("status")) != "passed":
+                    emit_progress(
+                        f"并发压测[{level_name}] 未达阈值: {stress_summary.get('error', '')}"
+                    )
+
+            stress_total = len(stress_summaries)
+            stress_passed = sum(1 for row in stress_summaries if str(row.get("status")) == "passed")
+            matrix_summary = {
+                "scenario": "concurrency_stress_matrix_summary",
+                "case_id": "verification_concurrency_stress_matrix_summary",
+                "capability_id": "verification.concurrency_stress_positive",
+                "status": "passed" if stress_passed == stress_total and stress_total > 0 else "failed",
+                "levels_total": stress_total,
+                "levels_passed": stress_passed,
+                "levels_failed": max(stress_total - stress_passed, 0),
+                "levels": ",".join(str(row.get("load_level", "")) for row in stress_summaries),
+            }
+            phase_metrics.append(matrix_summary)
+            case_assertions.append(
+                build_case_assertion(
+                    case_id="verification_concurrency_stress_matrix_summary",
+                    capability_id="verification.concurrency_stress_positive",
+                    expected=f"并发压测矩阵全部通过（{stress_total}档）",
+                    actual=(
+                        f"passed={stress_passed}/{stress_total} "
+                        f"levels={matrix_summary.get('levels', '')}"
+                    ),
+                    passed=stress_total > 0 and stress_passed == stress_total,
+                    error="" if stress_total > 0 and stress_passed == stress_total else "存在未达标档位",
+                )
             )
 
         emit_progress("执行负例: fake_signature_auth")
@@ -940,7 +1968,7 @@ def run_verification_flow(
             )
         )
         if str(neg_row_a.get("status")) != "passed":
-            raise AssertionError(f"负例失败: fake_signature_auth -> {neg_row_a.get('error')}")
+            emit_progress(f"负例失败（继续）: fake_signature_auth -> {neg_row_a.get('error')}")
 
         emit_progress("执行负例: context_mismatch")
         neg_row_b, neg_evidence_b = run_context_mismatch_negative(
@@ -962,7 +1990,116 @@ def run_verification_flow(
             )
         )
         if str(neg_row_b.get("status")) != "passed":
-            raise AssertionError(f"负例失败: context_mismatch -> {neg_row_b.get('error')}")
+            emit_progress(f"负例失败（继续）: context_mismatch -> {neg_row_b.get('error')}")
+
+        emit_progress("执行负例: unregistered_agent")
+        neg_row_unreg, neg_evidence_unreg = run_unregistered_agent_negative(
+            config=config,
+            key_config=key_config,
+        )
+        phase_metrics.append(neg_row_unreg)
+        evidence_items.extend(neg_evidence_unreg)
+        case_assertions.append(
+            build_case_assertion(
+                case_id=str(neg_row_unreg.get("case_id", "verification_negative_unregistered_agent")),
+                capability_id=str(neg_row_unreg.get("capability_id", "verification.unregistered_agent_reject")),
+                expected="未注册 Agent 在注册表中应为 isRegistered=False",
+                actual=f"status={neg_row_unreg.get('status')} result={neg_row_unreg.get('actual_result', '')}",
+                passed=str(neg_row_unreg.get("status")) == "passed",
+                error=str(neg_row_unreg.get("error", "")),
+            )
+        )
+        if str(neg_row_unreg.get("status")) != "passed":
+            emit_progress(f"负例失败（继续）: unregistered_agent -> {neg_row_unreg.get('error')}")
+
+        emit_progress("执行负例: expired_vc")
+        neg_row_expired, neg_evidence_expired = run_expired_vc_negative(
+            holder_port=holder_start_port,
+            verifier_role=negative_verifier_role,
+            key_config=key_config,
+        )
+        phase_metrics.append(neg_row_expired)
+        evidence_items.extend(neg_evidence_expired)
+        case_assertions.append(
+            build_case_assertion(
+                case_id=str(neg_row_expired.get("case_id", "verification_negative_expired_vc")),
+                capability_id=str(neg_row_expired.get("capability_id", "verification.expired_vc_reject")),
+                expected="过期 VC 应被 verify_vp 拒绝",
+                actual=f"status={neg_row_expired.get('status')} result={neg_row_expired.get('actual_result', '')}",
+                passed=str(neg_row_expired.get("status")) == "passed",
+                error=str(neg_row_expired.get("error", "")),
+            )
+        )
+        if str(neg_row_expired.get("status")) != "passed":
+            emit_progress(f"负例失败（继续）: expired_vc -> {neg_row_expired.get('error')}")
+
+        if mcp_abuse_enabled:
+            abuse_rows: list[dict[str, Any]] = []
+            for level in mcp_abuse_levels:
+                level_name = str(level.get("name", "L1"))
+                level_requests = int(level.get("requests_per_pair", mcp_abuse_requests_per_pair))
+                level_workers = int(level.get("max_workers", mcp_abuse_max_workers))
+                level_threshold = float(level.get("min_pass_rate", mcp_abuse_min_pass_rate))
+                emit_progress(
+                    "执行负例: mcp_abuse_concurrency "
+                    f"[{level_name}] "
+                    f"(requests_per_pair={level_requests}, workers={level_workers}, min_pass_rate={level_threshold:.2f})"
+                )
+                neg_row_mcp_abuse, neg_evidence_mcp_abuse = run_mcp_abuse_concurrency_negative(
+                    pairs=pairs,
+                    key_config=key_config,
+                    requests_per_pair=level_requests,
+                    max_workers=level_workers,
+                    load_level=level_name,
+                )
+                phase_metrics.append(neg_row_mcp_abuse)
+                abuse_rows.append(neg_row_mcp_abuse)
+                evidence_items.extend(neg_evidence_mcp_abuse)
+                pass_rate_actual = float(neg_row_mcp_abuse.get("pass_rate", 0.0))
+                level_passed = str(neg_row_mcp_abuse.get("status")) == "passed" and pass_rate_actual >= level_threshold
+                case_assertions.append(
+                    build_case_assertion(
+                        case_id=str(
+                            neg_row_mcp_abuse.get(
+                                "case_id",
+                                "verification_negative_mcp_abuse_concurrency",
+                            )
+                        ),
+                        capability_id=str(
+                            neg_row_mcp_abuse.get(
+                                "capability_id",
+                                "verification.mcp_abuse_concurrency_reject",
+                            )
+                        ),
+                        expected=f"[{level_name}] 并发 MCP 越权拦截率 >= {level_threshold:.2f}",
+                        actual=(
+                            f"level={level_name} "
+                            f"status={neg_row_mcp_abuse.get('status')} "
+                            f"blocked={neg_row_mcp_abuse.get('blocked_requests', 0)}/"
+                            f"{neg_row_mcp_abuse.get('total_requests', 0)} "
+                            f"pass_rate={pass_rate_actual:.4f}"
+                        ),
+                        passed=level_passed,
+                        error=str(neg_row_mcp_abuse.get("error", "")),
+                    )
+                )
+                if not level_passed:
+                    emit_progress(f"负例失败（继续）: mcp_abuse_concurrency[{level_name}] -> {neg_row_mcp_abuse.get('error')}")
+
+            abuse_total = len(abuse_rows)
+            abuse_passed = sum(1 for row in abuse_rows if str(row.get("status")) == "passed")
+            phase_metrics.append(
+                {
+                    "scenario": "negative_matrix_summary",
+                    "case_id": "verification_negative_mcp_abuse_matrix_summary",
+                    "capability_id": "verification.mcp_abuse_concurrency_reject",
+                    "negative_case": "mcp_abuse_concurrency",
+                    "status": "passed" if abuse_total > 0 and abuse_passed == abuse_total else "failed",
+                    "levels_total": abuse_total,
+                    "levels_passed": abuse_passed,
+                    "levels_failed": max(abuse_total - abuse_passed, 0),
+                }
+            )
 
         emit_progress("执行负例: tampered_vp_challenge")
         neg_row_c, neg_evidence_c = run_tampered_vp_challenge_negative(
@@ -983,7 +2120,7 @@ def run_verification_flow(
             )
         )
         if str(neg_row_c.get("status")) != "passed":
-            raise AssertionError(f"负例失败: tampered_vp_challenge -> {neg_row_c.get('error')}")
+            emit_progress(f"负例失败（继续）: tampered_vp_challenge -> {neg_row_c.get('error')}")
 
         emit_progress("执行负例: tampered_vp_signature")
         neg_row_d, neg_evidence_d = run_tampered_vp_signature_negative(
@@ -1004,7 +2141,7 @@ def run_verification_flow(
             )
         )
         if str(neg_row_d.get("status")) != "passed":
-            raise AssertionError(f"负例失败: tampered_vp_signature -> {neg_row_d.get('error')}")
+            emit_progress(f"负例失败（继续）: tampered_vp_signature -> {neg_row_d.get('error')}")
     finally:
         emit_progress("停止 Issuer/Holder 进程")
         terminate_processes(processes)

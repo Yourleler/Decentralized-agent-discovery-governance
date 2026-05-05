@@ -240,7 +240,8 @@ def generate_agent_metadata(
     full_vc_refs=None,
     searchable_keywords=None,
     vector_text=None,
-    metadata_version="2.0.0"
+    metadata_version="2.0.0",
+    interop=None,
 ):
     """
     生成 metadata（对齐 config/agent_metadata_format.schema.json）
@@ -324,6 +325,13 @@ def generate_agent_metadata(
             "types": vc_types,
             "lazyFetch": True,
             "fullVcRefs": full_vc_refs
+        },
+        "interop": {
+            "supportedProtocols": ["native", "a2a"],
+            "a2aEndpoint": endpoint_url.rstrip("/") + "/a2a",
+            "supportedInteractionModes": interaction_modes,
+            "authMode": "did-sig",
+            **(interop or {})
         },
         "indexHints": {
             "vectorText": vector_text,
@@ -421,6 +429,7 @@ def generate_vp_payload(
     nonce,
     verifiable_credentials=None,
     holder_binding=None,
+    session=None,
     proof_jws=None,
     proof_type="EcdsaSecp256k1RecoverySignature2020",
     proof_purpose="authentication",
@@ -465,6 +474,7 @@ def generate_vp_payload(
         "holder": holder_did,
         "holderBinding": holder_binding,
         "verifiableCredential": verifiable_credentials,
+        "session": dict(session or {}),
         "proof": {
             "type": proof_type,
             "created": _utc_now_iso(),
